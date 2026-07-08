@@ -1,0 +1,8 @@
+# Build artifacts
+/layeredit
+src/*.o
+*.o
+*.dSYM/
+
+# Editor/OS noise
+.DS_Store
