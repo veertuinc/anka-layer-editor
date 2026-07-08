@@ -1,4 +1,4 @@
-# anka-layer-editor / layeredit
+# anka-layer-editor
 #
 # Standalone TUI for editing filesystem-layer tar.gz archives.
 # Self-contained: depends only on system zlib and ncurses. No anka code.
@@ -7,7 +7,7 @@ CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter
 LDLIBS  := -lz -lncurses
 PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
-BIN     := layeredit
+BIN     := anka-layer-editor
 SRC     := $(wildcard src/*.c)
 OBJ     := $(SRC:.c=.o)
 HDR     := $(wildcard src/*.h)

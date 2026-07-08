@@ -140,7 +140,7 @@ int archive_save(const char *path, le_model *m, char *err, size_t errlen) {
     strlcpy(dirbuf, path, sizeof(dirbuf));
     char *dir = dirname(dirbuf);
     char tmp[PATH_MAX];
-    snprintf(tmp, sizeof(tmp), "%s/.layeredit.%d.tmp", dir, (int)getpid());
+    snprintf(tmp, sizeof(tmp), "%s/.anka-layer-editor.%d.tmp", dir, (int)getpid());
 
     tar_t *out = tar_wopen(tmp, 6);
     if (!out) {

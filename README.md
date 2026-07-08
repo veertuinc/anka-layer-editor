@@ -1,6 +1,6 @@
 # anka-layer-editor
 
-`layeredit` is a standalone terminal (TUI) tool for browsing and editing an Anka
+`anka-layer-editor` is a standalone terminal (TUI) tool for browsing and editing an Anka
 filesystem-layer archive (`.tar.gz`) before you import/push it. It lets you:
 
 - Navigate the archive hierarchy, expanding and collapsing directories.
@@ -19,7 +19,7 @@ at the edges (you run those steps yourself).
 anka export --layer mytemplate /path/to/layer.tar.gz
 
 # 2. Curate the layer interactively (this tool)
-layeredit /path/to/layer.tar.gz
+anka-layer-editor /path/to/layer.tar.gz
 
 # 3. Restore the template and re-apply the edited layer (Anka)
 anka pull --local mytemplate --tag vanilla --shrink
@@ -38,7 +38,7 @@ Linux distributions).
 make
 ```
 
-This produces the `layeredit` binary. To install:
+This produces the `anka-layer-editor` binary. To install:
 
 ```bash
 sudo make install            # installs to /usr/local/bin
@@ -49,7 +49,7 @@ make install PREFIX=~/.local
 ## Usage
 
 ```bash
-layeredit <archive.tar.gz>
+anka-layer-editor <archive.tar.gz>
 ```
 
 ### Keys

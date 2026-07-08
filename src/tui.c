@@ -122,7 +122,7 @@ static void draw_row(tui_state *st, int screen_y, size_t idx) {
 
 static void draw_help(void) {
     const char *lines[] = {
-        "  layeredit — help",
+        "  anka-layer-editor — help",
         "",
         "  Up/Down, j/k    Move selection",
         "  Right / l       Expand directory (or step into)",
@@ -159,7 +159,7 @@ static void draw(tui_state *st) {
     char title[COLS + 1];
     char pathcopy[PATH_MAX];
     strlcpy(pathcopy, st->path, sizeof(pathcopy));
-    snprintf(title, sizeof(title), " layeredit — %s%s ",
+    snprintf(title, sizeof(title), " anka-layer-editor — %s%s ",
              basename(pathcopy), st->m->dirty ? "  [modified]" : "");
     attron(A_REVERSE);
     mvaddnstr(0, 0, title, COLS);

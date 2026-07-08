@@ -28,13 +28,13 @@ int main(int argc, char **argv) {
 
     le_model *m = model_new();
     if (!m) {
-        fprintf(stderr, "layeredit: out of memory\n");
+        fprintf(stderr, "%s: out of memory\n", argv[0]);
         return 1;
     }
 
     char err[256] = "";
     if (archive_load(argv[1], m, err, sizeof(err)) != 0) {
-        fprintf(stderr, "layeredit: %s\n", err);
+        fprintf(stderr, "%s: %s\n", argv[0], err);
         model_free(m);
         return 1;
     }
