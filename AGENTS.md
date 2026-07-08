@@ -1,0 +1,1 @@
+- never ever mention cursor in commit messages
