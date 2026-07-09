@@ -3,6 +3,7 @@
 src/*.o
 *.o
 *.dSYM/
+tests/roundtrip_test
 
 # Editor/OS noise
 .DS_Store
