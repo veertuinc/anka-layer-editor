@@ -49,11 +49,14 @@ static le_node *node_new(const char *name, le_node *parent) {
     return n;
 }
 
-static le_node *child_find_or_add(le_node *p, const char *name) {
+static le_node *child_find_or_add(le_node *p, const char *name, int *created) {
     int found;
     size_t idx = child_lb(p, name, &found);
-    if (found)
+    if (found) {
+        if (created)
+            *created = 0;
         return p->children[idx];
+    }
 
     if (p->nchildren == p->cap) {
         size_t ncap = p->cap ? p->cap * 2 : 8;
@@ -70,6 +73,8 @@ static le_node *child_find_or_add(le_node *p, const char *name) {
             (p->nchildren - idx) * sizeof(*p->children));
     p->children[idx] = child;
     p->nchildren++;
+    if (created)
+        *created = 1;
     return child;
 }
 
@@ -130,9 +135,12 @@ le_node *model_insert(le_model *m, const char *path, int is_dir,
         comp[clen] = '\0';
 
         int final = !slash || slash[1] == '\0';
-        cur = child_find_or_add(cur, comp);
+        int created = 0;
+        cur = child_find_or_add(cur, comp, &created);
         if (!cur)
             return NULL;
+        if (created)
+            m->total++;
         if (!final)
             cur->is_dir = 1;             /* interior component is a directory */
         if (!slash)
@@ -152,7 +160,6 @@ le_node *model_insert(le_model *m, const char *path, int is_dir,
         free(cur->link);
         cur->link = strdup(link);
     }
-    m->total++;
     return cur;
 }
 
@@ -162,10 +169,11 @@ le_node *model_add_host(le_model *m, const char *dest, const char *host_path,
     le_node *n = model_insert(m, dest, 0, is_symlink, size, mode, link);
     if (!n)
         return NULL;
+    if (!n->added)
+        m->added++;
     n->added = 1;
     free(n->host_path);
     n->host_path = strdup(host_path);
-    m->added++;
     m->dirty = 1;
     for (le_node *a = n->parent; a && a->parent; a = a->parent)
         a->expanded = 1;                 /* reveal the addition */
@@ -218,28 +226,97 @@ void model_toggle_removed(le_model *m, le_node *n) {
     m->dirty = 1;
 }
 
-void node_path(const le_node *n, char *buf, size_t len) {
-    const le_node *stack[512];
-    int cnt = 0;
-    for (const le_node *c = n; c && c->parent; c = c->parent)
-        if (cnt < (int)(sizeof(stack) / sizeof(stack[0])))
-            stack[cnt++] = c;
-    size_t off = 0;
+int node_path(const le_node *n, char *buf, size_t len) {
+    if (!buf || len == 0)
+        return -1;
     buf[0] = '\0';
-    for (int i = cnt - 1; i >= 0 && off < len; i--)
-        off += (size_t)snprintf(buf + off, len - off, "%s%s",
-                                stack[i]->name, i ? "/" : "");
+    if (!n || !n->parent)
+        return 0;
+
+    size_t depth = 0;
+    for (const le_node *c = n; c && c->parent; c = c->parent)
+        depth++;
+
+    const le_node **stack = malloc(depth * sizeof(*stack));
+    if (!stack)
+        return -1;
+    size_t cnt = 0;
+    for (const le_node *c = n; c && c->parent; c = c->parent)
+        stack[cnt++] = c;
+
+    size_t off = 0;
+    int truncated = 0;
+    for (size_t i = cnt; i > 0; i--) {
+        const char *name = stack[i - 1]->name;
+        int wrote = snprintf(buf + off, len - off, "%s%s",
+                             name, i > 1 ? "/" : "");
+        if (wrote < 0 || (size_t)wrote >= len - off) {
+            truncated = 1;
+            break;
+        }
+        off += (size_t)wrote;
+    }
+    free(stack);
+    return truncated ? -1 : 0;
+}
+
+/* Detach child at index and free its subtree. */
+static void child_remove_at(le_node *parent, size_t idx) {
+    le_node *victim = parent->children[idx];
+    memmove(&parent->children[idx], &parent->children[idx + 1],
+            (parent->nchildren - idx - 1) * sizeof(*parent->children));
+    parent->nchildren--;
+    node_free(victim);
+}
+
+static void reconcile_node(le_node *n) {
+    /* Walk children first so removals are bottom-up safe. */
+    for (size_t i = 0; i < n->nchildren; ) {
+        le_node *c = n->children[i];
+        if (c->removed) {
+            child_remove_at(n, i);
+            continue;
+        }
+        reconcile_node(c);
+        i++;
+    }
+    if (n->added) {
+        n->added = 0;
+        free(n->host_path);
+        n->host_path = NULL;
+    }
+}
+
+static size_t count_members(const le_node *n) {
+    size_t total = 0;
+    for (size_t i = 0; i < n->nchildren; i++) {
+        total++; /* every non-root node is a member (dir or leaf) */
+        total += count_members(n->children[i]);
+    }
+    return total;
+}
+
+void model_reconcile_after_save(le_model *m) {
+    if (!m || !m->root)
+        return;
+    reconcile_node(m->root);
+    m->marked = 0;
+    m->added = 0;
+    m->total = count_members(m->root);
+    m->dirty = 0;
 }
 
 /* ---- flatten ---- */
 
-static int subtree_matches(const le_node *n, const char *filter) {
-    if (strcasestr(n->name, filter))
-        return 1;
+/* Mark every node whose name matches filter, and propagate hits up to ancestors
+ * so flatten can decide visibility in O(n) instead of re-walking subtrees. */
+static int mark_filter_hits(le_node *n, const char *filter) {
+    int hit = filter && *filter && strcasestr(n->name, filter) != NULL;
     for (size_t i = 0; i < n->nchildren; i++)
-        if (subtree_matches(n->children[i], filter))
-            return 1;
-    return 0;
+        if (mark_filter_hits(n->children[i], filter))
+            hit = 1;
+    n->filter_hit = hit;
+    return hit;
 }
 
 static void row_push(le_row **out, size_t *n, size_t *cap,
@@ -257,22 +334,24 @@ static void row_push(le_row **out, size_t *n, size_t *cap,
     (*n)++;
 }
 
-static void flatten_rec(le_node *node, int depth, const char *filter,
+static void flatten_rec(le_node *node, int depth, int filtering,
                         le_row **out, size_t *n, size_t *cap) {
-    int filtering = filter && *filter;
     for (size_t i = 0; i < node->nchildren; i++) {
         le_node *c = node->children[i];
-        if (filtering && !subtree_matches(c, filter))
+        if (filtering && !c->filter_hit)
             continue;
         row_push(out, n, cap, c, depth);
         if (c->is_dir && (c->expanded || filtering))
-            flatten_rec(c, depth + 1, filter, out, n, cap);
+            flatten_rec(c, depth + 1, filtering, out, n, cap);
     }
 }
 
 size_t model_flatten(le_model *m, const char *filter,
                      le_row **out, size_t *cap) {
     size_t n = 0;
-    flatten_rec(m->root, 0, filter, out, &n, cap);
+    int filtering = filter && *filter;
+    if (filtering)
+        mark_filter_hits(m->root, filter);
+    flatten_rec(m->root, 0, filtering, out, &n, cap);
     return n;
 }

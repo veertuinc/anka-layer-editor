@@ -279,8 +279,18 @@ static void action_add(tui_state *st) {
         return;
     }
     int sym = S_ISLNK(sb.st_mode);
+    char linktgt[PATH_MAX] = "";
+    if (sym) {
+        ssize_t l = readlink(host, linktgt, sizeof(linktgt) - 1);
+        if (l == -1) {
+            snprintf(st->msg, sizeof(st->msg), "readlink failed: %s", host);
+            return;
+        }
+        linktgt[l] = '\0';
+    }
     le_node *n = model_add_host(st->m, dest, host, sym,
-                                sym ? 0 : sb.st_size, sb.st_mode, NULL);
+                                sym ? 0 : sb.st_size, sb.st_mode,
+                                sym ? linktgt : NULL);
     if (!n) {
         snprintf(st->msg, sizeof(st->msg), "invalid destination path");
         return;
@@ -312,10 +322,12 @@ static void action_filter(tui_state *st) {
 
 static void action_save(tui_state *st) {
     char err[256] = "";
-    if (archive_save(st->path, st->m, err, sizeof(err)) == 0)
+    if (archive_save(st->path, st->m, err, sizeof(err)) == 0) {
+        rebuild_rows(st);
         snprintf(st->msg, sizeof(st->msg), "saved %zu entries", st->m->total);
-    else
+    } else {
         snprintf(st->msg, sizeof(st->msg), "SAVE FAILED: %s", err);
+    }
 }
 
 /* ---- main loop ---- */

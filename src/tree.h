@@ -29,6 +29,7 @@ typedef struct le_node {
     char             *link;         /* symlink target */
 
     int               expanded;     /* UI: directory expansion state */
+    int               filter_hit;   /* transient: subtree matches active filter */
 } le_node;
 
 typedef struct {
@@ -60,7 +61,12 @@ le_node  *model_add_host(le_model *m, const char *dest, const char *host_path,
 le_node  *model_lookup(le_model *m, const char *path);
 int       node_effectively_removed(const le_node *n);
 void      model_toggle_removed(le_model *m, le_node *n);
-void      node_path(const le_node *n, char *buf, size_t len);
+/* Rebuild guest path into buf. Returns 0, or -1 if truncated. */
+int       node_path(const le_node *n, char *buf, size_t len);
+
+/* After a successful save: drop removed subtrees, clear staged-add flags,
+ * and reset counters so the in-memory model matches the written archive. */
+void      model_reconcile_after_save(le_model *m);
 
 /* Flatten visible rows (respecting expansion and optional substring filter).
  * The out and cap args form a reusable growable buffer owned by the caller.

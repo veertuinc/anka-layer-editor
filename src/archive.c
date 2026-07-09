@@ -34,9 +34,25 @@ int archive_load(const char *path, le_model *m, char *err, size_t errlen) {
     while ((r = tar_read_next(in, &e)) == 1) {
         int is_dir = (e.type == TAR_DIR);
         int is_sym = (e.type == TAR_SYMLINK);
-        model_insert(m, e.path, is_dir, is_sym, e.size, e.mode,
-                     is_sym ? e.link : NULL);
-        tar_skip_data(in);
+        /* Root / empty paths are skipped by model_insert (NULL is OK). */
+        const char *p = e.path;
+        while (*p == '/')
+            p++;
+        int skip_insert = (p[0] == '\0' || (p[0] == '.' && p[1] == '\0'));
+        if (!skip_insert) {
+            le_node *n = model_insert(m, e.path, is_dir, is_sym, e.size, e.mode,
+                                      is_sym ? e.link : NULL);
+            if (!n) {
+                seterr(err, errlen, "%s: failed to insert path '%s'", path, e.path);
+                tar_close(in);
+                return -1;
+            }
+        }
+        if (tar_skip_data(in) == -1) {
+            seterr(err, errlen, "%s: skip error", path);
+            tar_close(in);
+            return -1;
+        }
     }
 
     tar_close(in);
@@ -61,7 +77,10 @@ static int copy_data(tar_t *in, tar_t *out) {
 static int write_addition(tar_t *out, const le_node *n,
                           char *err, size_t errlen) {
     char guest[PATH_MAX];
-    node_path(n, guest, sizeof(guest));
+    if (node_path(n, guest, sizeof(guest)) == -1) {
+        seterr(err, errlen, "path too deep for node '%s'", n->name);
+        return -1;
+    }
 
     struct stat st;
     if (lstat(n->host_path, &st) == -1) {
@@ -107,16 +126,23 @@ static int write_addition(tar_t *out, const le_node *n,
     }
     char buf[COPY_BUF];
     size_t rd;
+    off_t written = 0;
     int rc = 0;
     while ((rd = fread(buf, 1, sizeof(buf), f)) > 0) {
         if (tar_write_data(out, buf, rd) == -1) {
             rc = -1;
             break;
         }
+        written += (off_t)rd;
     }
     if (rc == 0 && ferror(f))
         rc = -1;
     fclose(f);
+    if (rc == 0 && written != st.st_size) {
+        seterr(err, errlen, "%s: size changed during read (%lld -> %lld)",
+               n->host_path, (long long)st.st_size, (long long)written);
+        return -1;
+    }
     return rc;
 }
 
@@ -132,6 +158,12 @@ static int append_additions(tar_t *out, le_node *node,
             return -1;
     }
     return 0;
+}
+
+/* Skip an original member when it is marked removed (incl. via ancestor) or
+ * replaced by a staged host addition at the same path. */
+static int should_skip_original(const le_node *n) {
+    return n && (node_effectively_removed(n) || n->added);
 }
 
 int archive_save(const char *path, le_model *m, char *err, size_t errlen) {
@@ -155,13 +187,17 @@ int archive_save(const char *path, le_model *m, char *err, size_t errlen) {
         return -1;
     }
 
-    /* Stream the original: keep entries whose path is not effectively removed. */
+    /* Stream the original: keep entries that are not removed or replaced. */
     tar_entry e;
     int r, failed = 0;
     while ((r = tar_read_next(in, &e)) == 1) {
         le_node *n = model_lookup(m, e.path);
-        if (n && node_effectively_removed(n)) {
-            tar_skip_data(in);
+        if (should_skip_original(n)) {
+            if (tar_skip_data(in) == -1) {
+                seterr(err, errlen, "%s: skip error", path);
+                failed = 1;
+                break;
+            }
             continue;
         }
         if (tar_write_header(out, &e) == -1) {
@@ -169,8 +205,15 @@ int archive_save(const char *path, le_model *m, char *err, size_t errlen) {
             failed = 1;
             break;
         }
-        if (e.type == TAR_FILE && copy_data(in, out) == -1) {
-            seterr(err, errlen, "%s: copy error", tmp);
+        /* Copy any payload bytes (files, and rare non-file sized entries). */
+        if (e.size > 0 && e.type != TAR_SYMLINK) {
+            if (copy_data(in, out) == -1) {
+                seterr(err, errlen, "%s: copy error", tmp);
+                failed = 1;
+                break;
+            }
+        } else if (tar_skip_data(in) == -1) {
+            seterr(err, errlen, "%s: skip error", path);
             failed = 1;
             break;
         }
@@ -200,6 +243,6 @@ int archive_save(const char *path, le_model *m, char *err, size_t errlen) {
         return -1;
     }
 
-    m->dirty = 0;
+    model_reconcile_after_save(m);
     return 0;
 }

@@ -37,8 +37,11 @@ struct tar {
     /* read: bytes of current entry not yet consumed + trailing padding */
     off_t  rdata;
     off_t  rpad;
-    /* write: bytes written for current entry (for trailing padding) */
+    /* write: declared size, bytes written so far, and whether a sized
+     * file entry is open (so finish_data can detect short/long writes). */
+    off_t  wsize;
     off_t  wdata;
+    int    wactive;
 };
 
 /* ---- low-level gzip helpers ---- */
@@ -163,8 +166,9 @@ static int num_digits(size_t n) {
     return d;
 }
 
-static void pax_add(char *buf, size_t cap, size_t *len,
-                    const char *key, const char *val) {
+/* Append one pax record. Returns 0 on success, -1 if it would not fit. */
+static int pax_add(char *buf, size_t cap, size_t *len,
+                   const char *key, const char *val) {
     size_t body = strlen(key) + 1 + strlen(val) + 1;   /* key=val\n */
     int digits = 1;
     size_t total;
@@ -175,9 +179,26 @@ static void pax_add(char *buf, size_t cap, size_t *len,
             break;
         digits = d;
     }
-    if (*len < cap)
-        *len += (size_t)snprintf(buf + *len, cap - *len, "%zu %s=%s\n",
-                                 total, key, val);
+    if (*len + total >= cap)
+        return -1;
+    int wrote = snprintf(buf + *len, cap - *len, "%zu %s=%s\n",
+                         total, key, val);
+    if (wrote < 0 || (size_t)wrote != total)
+        return -1;
+    *len += (size_t)wrote;
+    return 0;
+}
+
+/* True when an unsigned value cannot be stored in an n-byte octal field
+ * (n-1 digits + NUL). */
+static int octal_overflows(unsigned long long v, size_t field_len) {
+    if (field_len < 2)
+        return 1;
+    int digits = (int)(field_len - 1);
+    unsigned long long max = 0;
+    for (int i = 0; i < digits; i++)
+        max = (max << 3) | 7ULL;
+    return v > max;
 }
 
 /* ==== reader ==== */
@@ -371,7 +392,10 @@ int tar_read_next(tar_t *t, tar_entry *e) {
                                            : parse_octal(h->mtime, sizeof(h->mtime)));
         e->size = pax_size >= 0 ? pax_size : size;
 
-        if (e->type == TAR_FILE) {
+        /* Symlinks carry their target in the header/linkname, not as payload.
+         * Any other entry with a non-zero size has trailing data we must
+         * consume so the stream stays aligned. */
+        if (e->type != TAR_SYMLINK && e->size > 0) {
             t->rdata = e->size;
             t->rpad = PAD512(e->size);
         } else {
@@ -429,12 +453,22 @@ tar_t *tar_wopen(const char *path, int level) {
     return t;
 }
 
-/* Pad out the previous entry's data to a 512 boundary. */
+/* Pad out the previous entry's data to a 512 boundary.
+ * Fails closed if a sized file entry was short or long relative to its header. */
 static int finish_data(tar_t *t) {
+    if (t->wactive && t->wdata != t->wsize) {
+        errno = EIO;
+        t->wactive = 0;
+        t->wdata = 0;
+        t->wsize = 0;
+        return -1;
+    }
     off_t pad = PAD512(t->wdata);
     if (pad && -1 == gz_writezeros(t->gz, (size_t)pad))
         return -1;
+    t->wactive = 0;
     t->wdata = 0;
+    t->wsize = 0;
     return 0;
 }
 
@@ -465,19 +499,42 @@ int tar_write_header(tar_t *t, const tar_entry *e) {
     }
 
     int need_path = 0, need_link = 0;
+    int need_uid = 0, need_gid = 0, need_mtime = 0;
     char name[100] = {0}, prefix[155] = {0};
     if (!name_fits(wpath, name, prefix))
         need_path = 1;
     if (e->type == TAR_SYMLINK && strlen(e->link) > 100)
         need_link = 1;
+    if (octal_overflows((unsigned long long)e->uid, 8))
+        need_uid = 1;
+    if (octal_overflows((unsigned long long)e->gid, 8))
+        need_gid = 1;
+    if (octal_overflows((unsigned long long)e->mtime, 12))
+        need_mtime = 1;
 
-    if (need_path || need_link) {
+    if (need_path || need_link || need_uid || need_gid || need_mtime) {
         char pax[1 << 16];
         size_t plen = 0;
-        if (need_path)
-            pax_add(pax, sizeof(pax), &plen, "path", wpath);
-        if (need_link)
-            pax_add(pax, sizeof(pax), &plen, "linkpath", e->link);
+        char num[32];
+        if (need_path && pax_add(pax, sizeof(pax), &plen, "path", wpath) == -1)
+            return -1;
+        if (need_link && pax_add(pax, sizeof(pax), &plen, "linkpath", e->link) == -1)
+            return -1;
+        if (need_uid) {
+            snprintf(num, sizeof(num), "%llu", (unsigned long long)e->uid);
+            if (pax_add(pax, sizeof(pax), &plen, "uid", num) == -1)
+                return -1;
+        }
+        if (need_gid) {
+            snprintf(num, sizeof(num), "%llu", (unsigned long long)e->gid);
+            if (pax_add(pax, sizeof(pax), &plen, "gid", num) == -1)
+                return -1;
+        }
+        if (need_mtime) {
+            snprintf(num, sizeof(num), "%lld", (long long)e->mtime);
+            if (pax_add(pax, sizeof(pax), &plen, "mtime", num) == -1)
+                return -1;
+        }
 
         struct posix_header xh;
         memset(&xh, 0, sizeof(xh));
@@ -486,7 +543,7 @@ int tar_write_header(tar_t *t, const tar_entry *e) {
         put_octal(xh.uid, sizeof(xh.uid), 0);
         put_octal(xh.gid, sizeof(xh.gid), 0);
         put_size(xh.size, (off_t)plen);
-        put_octal(xh.mtime, sizeof(xh.mtime), (unsigned long long)e->mtime);
+        put_octal(xh.mtime, sizeof(xh.mtime), 0);
         xh.typeflag = 'x';
         if (-1 == emit_header(t, &xh))
             return -1;
@@ -506,10 +563,11 @@ int tar_write_header(tar_t *t, const tar_entry *e) {
     }
 
     put_octal(h.mode, sizeof(h.mode), e->mode & 07777);
-    put_octal(h.uid, sizeof(h.uid), e->uid);
-    put_octal(h.gid, sizeof(h.gid), e->gid);
+    put_octal(h.uid, sizeof(h.uid), need_uid ? 0 : (unsigned long long)e->uid);
+    put_octal(h.gid, sizeof(h.gid), need_gid ? 0 : (unsigned long long)e->gid);
     put_size(h.size, e->type == TAR_FILE ? e->size : 0);
-    put_octal(h.mtime, sizeof(h.mtime), (unsigned long long)e->mtime);
+    put_octal(h.mtime, sizeof(h.mtime),
+              need_mtime ? 0 : (unsigned long long)e->mtime);
 
     switch (e->type) {
     case TAR_DIR:     h.typeflag = '5'; break;
@@ -522,7 +580,15 @@ int tar_write_header(tar_t *t, const tar_entry *e) {
     if (-1 == emit_header(t, &h))
         return -1;
 
-    t->wdata = (e->type == TAR_FILE) ? e->size : 0;
+    if (e->type == TAR_FILE) {
+        t->wactive = 1;
+        t->wsize = e->size;
+        t->wdata = 0;
+    } else {
+        t->wactive = 0;
+        t->wsize = 0;
+        t->wdata = 0;
+    }
     return 0;
 }
 
@@ -531,6 +597,7 @@ ssize_t tar_write_data(tar_t *t, const void *buf, size_t len) {
         return 0;
     if (gzwrite(t->gz, buf, (unsigned)len) != (int)len)
         return -1;
+    t->wdata += (off_t)len;
     return (ssize_t)len;
 }
 

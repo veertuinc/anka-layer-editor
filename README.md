@@ -31,11 +31,11 @@ anka push --layer -t mylayer mytemplate
 
 ## Build
 
-Requires a C toolchain, `zlib`, and `ncurses` (all present by default on macOS and most
-Linux distributions).
+Requires a C toolchain, `zlib`, and `ncurses` (present by default on macOS).
 
 ```bash
 make
+make test          # headless round-trip tests
 ```
 
 This produces the `anka-layer-editor` binary. To install:
