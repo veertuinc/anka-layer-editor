@@ -72,8 +72,82 @@ static int multi(const tui_state *st) {
     return st->m->narchives > 1;
 }
 
-static int list_height(void) {
-    int h = LINES - 2;              /* header + status bar */
+#define HELP_MAX_LINES 4
+#define HELP_LINE_CAP  256
+
+/* Build the keybinding footer text (single logical line, may wrap on draw). */
+static void format_help(const tui_state *st, char *buf, size_t buflen) {
+    int off = str_append(buf, buflen, 0,
+                         "arrows = move/collapse/expand | Space = mark"
+                         " | a = add file from host | / = filter | s = save | q = quit"
+                         " | ? = more");
+    if (multi(st))
+        str_append(buf, buflen, off, " | yellow = file in multiple archives");
+}
+
+/* Wrap text to width, breaking on spaces when possible. Returns line count. */
+static int wrap_text(const char *text, int width,
+                     char out[][HELP_LINE_CAP], int max_lines) {
+    if (width < 1)
+        width = 1;
+    if (width >= HELP_LINE_CAP)
+        width = HELP_LINE_CAP - 1;
+
+    int nlines = 0;
+    const char *p = text;
+    while (*p && nlines < max_lines) {
+        while (*p == ' ')
+            p++;
+        if (!*p)
+            break;
+
+        int remaining = (int)strlen(p);
+        int take;
+        if (remaining <= width || nlines == max_lines - 1) {
+            /* Last available line: take what fits (truncate if needed). */
+            take = remaining > width ? width : remaining;
+            snprintf(out[nlines], HELP_LINE_CAP, "%.*s", take, p);
+            nlines++;
+            break;
+        }
+
+        take = width;
+        /* Prefer a " | " boundary, then any space, then a hard cut. */
+        int brk = -1;
+        for (int i = take; i >= 3; i--) {
+            if (p[i - 3] == ' ' && p[i - 2] == '|' && p[i - 1] == ' ') {
+                brk = i - 3;
+                break;
+            }
+        }
+        if (brk <= 0) {
+            for (int i = take; i > 0; i--) {
+                if (p[i] == ' ') {
+                    brk = i;
+                    break;
+                }
+            }
+        }
+        if (brk <= 0)
+            brk = take;
+        snprintf(out[nlines], HELP_LINE_CAP, "%.*s", brk, p);
+        p += brk;
+        nlines++;
+    }
+    return nlines < 1 ? 1 : nlines;
+}
+
+static int help_footer_height(const tui_state *st) {
+    char buf[1024];
+    char lines[HELP_MAX_LINES][HELP_LINE_CAP];
+    format_help(st, buf, sizeof(buf));
+    int width = (COLS > 1 ? COLS : 80) - 1;
+    return wrap_text(buf, width, lines, HELP_MAX_LINES);
+}
+
+static int list_height(const tui_state *st) {
+    /* header + status bar + wrapped keybinding footer */
+    int h = LINES - 2 - help_footer_height(st);
     return h < 1 ? 1 : h;
 }
 
@@ -88,7 +162,7 @@ static void rebuild_rows(tui_state *st) {
 
 /* Keep the selected row within the visible window. */
 static void clamp_scroll(tui_state *st) {
-    int h = list_height();
+    int h = list_height(st);
     if (st->cursor < st->top)
         st->top = st->cursor;
     else if (st->cursor >= st->top + (size_t)h)
@@ -99,7 +173,10 @@ static void clamp_scroll(tui_state *st) {
 static void draw_bar(int y, const char *text) {
     attron(A_REVERSE);
     mvaddnstr(y, 0, text, COLS);
-    for (int x = (int)strlen(text); x < COLS; x++)
+    int len = (int)strlen(text);
+    if (len > COLS)
+        len = COLS;
+    for (int x = len; x < COLS; x++)
         mvaddch(y, x, ' ');
     attroff(A_REVERSE);
 }
@@ -294,8 +371,16 @@ static void draw(tui_state *st) {
     }
     draw_bar(0, title);
 
+    /* Keybinding footer height drives how much room the list gets. */
+    char help_buf[1024];
+    char help_lines[HELP_MAX_LINES][HELP_LINE_CAP];
+    format_help(st, help_buf, sizeof(help_buf));
+    /* Leave one column for the leading pad space on each footer line. */
+    int help_width = (COLS > 1 ? COLS : 80) - 1;
+    int help_n = wrap_text(help_buf, help_width, help_lines, HELP_MAX_LINES);
+
     /* List. */
-    int h = list_height();
+    int h = list_height(st);
     if (st->nrows == 0) {
         mvaddnstr(1, 2, st->filtering ? "(no matches)" : "(empty archive)",
                   COLS - 2);
@@ -308,7 +393,7 @@ static void draw(tui_state *st) {
         }
     }
 
-    /* Status bar. */
+    /* Status bar (counts + transient message), just above the help footer. */
     char status[1024];
     off = str_append(status, sizeof(status), 0,
                      " %zu paths | marked: %zu | staged: %zu",
@@ -318,7 +403,14 @@ static void draw(tui_state *st) {
                          st->filter);
     if (st->msg[0])
         str_append(status, sizeof(status), off, " | %s", st->msg);
-    draw_bar(LINES - 1, status);
+    draw_bar(LINES - 1 - help_n, status);
+
+    /* Wrapped keybinding footer (leading space matches the status bar). */
+    for (int i = 0; i < help_n; i++) {
+        char padded[HELP_LINE_CAP + 2];
+        snprintf(padded, sizeof(padded), " %s", help_lines[i]);
+        draw_bar(LINES - help_n + i, padded);
+    }
 
     refresh();
 }
@@ -604,12 +696,12 @@ int tui_run(const le_session *sess, le_model *m) {
                 st.cursor++;
             break;
         case KEY_NPAGE:
-            st.cursor += (size_t)list_height();
+            st.cursor += (size_t)list_height(&st);
             if (st.cursor >= st.nrows && st.nrows)
                 st.cursor = st.nrows - 1;
             break;
         case KEY_PPAGE: {
-            size_t step = (size_t)list_height();
+            size_t step = (size_t)list_height(&st);
             st.cursor = st.cursor > step ? st.cursor - step : 0;
             break;
         }
