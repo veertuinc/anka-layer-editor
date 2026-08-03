@@ -53,7 +53,7 @@ make install PREFIX=~/.local
 ## CI
 
 Pushes and pull requests to `edge` run GitHub Actions CI on `macos-latest` and
-`ubuntu-latest` (`make`: build + headless tests).
+`ubuntu-24.04-arm` (`make`: build + headless tests).
 
 ## Release
 
@@ -62,7 +62,7 @@ Cut a release from the Actions tab: run the **Release** workflow and set
 
 1. Builds and tests on macOS and Linux
 2. Creates tag `vX.Y.Z` and a GitHub Release
-3. Attaches `anka-layer-editor-darwin-arm64` and `anka-layer-editor-linux-amd64`
+3. Attaches `anka-layer-editor-darwin-arm64` and `anka-layer-editor-linux-arm64`
 
 ## Usage
 
