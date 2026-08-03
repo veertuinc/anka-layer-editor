@@ -10,3 +10,6 @@ testdata/.stage/
 
 # Editor/OS noise
 .DS_Store
+
+
+docs
