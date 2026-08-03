@@ -115,6 +115,8 @@ jobs:
           set -euo pipefail
           test -f dist/anka-layer-editor-darwin-arm64
           test -f dist/anka-layer-editor-linux-amd64
+          git config user.name "github-service-user-veertu"
+          git config user.email "service.user@veertu.com"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
           gh release create "$TAG" \
