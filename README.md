@@ -1,12 +1,13 @@
 # anka-layer-editor
 
-`anka-layer-editor` is a standalone terminal (TUI) tool for browsing and editing an Anka
-filesystem-layer archive (`.tar.gz`) before you import/push it. It lets you:
+`anka-layer-editor` is a standalone terminal (TUI) tool for browsing and editing Anka
+filesystem-layer archives (`.tar.gz`) before you import/push them. It lets you:
 
 - Navigate the archive hierarchy, expanding and collapsing directories.
 - Mark files or whole subtrees for removal from the archive.
 - Add files from the host machine at a chosen path inside the archive.
 - Save the edited archive back in place (atomically).
+- Open several layers at once (up to 8) and see which of them hold each path.
 
 It is a **completely separate product**. It does not link against, include, or modify
 any Anka code. It only reads and writes a standard gzip tar, so Anka is involved solely
@@ -18,7 +19,7 @@ at the edges (you run those steps yourself).
 # 1. Export a filesystem layer from your modified template (Anka)
 anka export --layer mytemplate /path/to/layer.tar.gz
 
-# 2. Curate the layer interactively (this tool)
+# 2. Curate the layer interactively (this tool; pass several layers to compare them)
 anka-layer-editor /path/to/layer.tar.gz
 
 # 3. Restore the template and re-apply the edited layer (Anka)
@@ -26,7 +27,7 @@ anka pull --local mytemplate --tag vanilla --shrink
 anka import --vmid mytemplate /path/to/layer.tar.gz
 
 # 4. Push when satisfied (Anka)
-anka push --layer -t mylayer mytemplate
+anka push mytemplate --tag mylayer http://zot-registry:15455/v2
 ```
 
 ## Build
@@ -34,8 +35,9 @@ anka push --layer -t mylayer mytemplate
 Requires a C toolchain, `zlib`, and `ncurses` (present by default on macOS).
 
 ```bash
-make
-make test          # headless round-trip tests
+make               # builds the binary and runs the headless round-trip tests
+make build         # binary only
+make test          # tests only
 ```
 
 This produces the `anka-layer-editor` binary. To install:
@@ -49,7 +51,7 @@ make install PREFIX=~/.local
 ## Usage
 
 ```bash
-anka-layer-editor <archive.tar.gz>
+anka-layer-editor <archive1.tar.gz> [archive2.tar.gz archive3.tar.gz ...]
 ```
 
 ### Keys
@@ -62,23 +64,56 @@ anka-layer-editor <archive.tar.gz>
 | `Space` | Toggle mark-for-removal on the selected file/subtree |
 | `a` | Add a host file: prompts for host path, then destination path in the archive |
 | `/` | Filter by substring (auto-reveals matching branches; `Esc`/empty clears) |
-| `s` | Save the archive in place |
+| `s` | Save every changed archive in place |
 | `q` | Quit (asks to confirm if there are unsaved changes) |
 | `?` | Toggle the help overlay |
 
 Marked-for-removal rows are dimmed; staged additions are prefixed with `[+]`.
 
+## Comparing several layers
+
+Pass more than one archive to browse them together:
+
+```bash
+anka-layer-editor layer-a.tar.gz layer-b.tar.gz
+```
+
+Every path appears once, and a membership column shows which archives hold it:
+
+```
+X [12]  v etc/          both archives contain etc/
+  [1.]    > opt/        only the first archive
+  [.2]    > var/        only the second archive
+  [.+]      added.txt   staged into the second archive, not saved yet
+```
+
+Shared rows are bold, so overlap between layers stands out while you browse. A `!`
+after the column means the archives disagree about the entry's type or size. Paths
+are matched by name only; file contents are never hashed or compared.
+
+Edits stay scoped to an archive:
+
+- `Space` on a path held by one archive marks it there directly. On a shared path it
+  asks which archive to mark, or `a` for all of them.
+- `a` asks which archive receives the new file, since an addition belongs to one tar.
+- `s` writes every archive with unsaved changes and reports how many were saved. If one
+  fails, saving stops there and the archives already written stay saved.
+
+The header lists the loaded archives by number, with `*` marking unsaved changes.
+
 ## How it works
 
-- On open, the archive is scanned once and its entries are inserted into an in-memory
-  path tree (directories are inferred from entry paths).
-- Removal is tracked as a flag on tree nodes; a node is excluded on save if it or any of
-  its ancestors is marked.
+- On open, each archive is scanned once and its entries are inserted into a single
+  in-memory path tree (directories are inferred from entry paths). A path found in
+  several archives becomes one node that records which archives hold it.
+- Removal and staged additions are per-archive flags on tree nodes; a node is excluded
+  from an archive on save if it or any of its ancestors is marked for that archive.
 - Additions reference the host file by path and are read at save time.
 - On save, the original archive is streamed entry-by-entry into a temporary file (kept
   entries copied, removed entries skipped), staged additions are appended, and the temp
   file is atomically renamed over the original. The original is left untouched unless the
-  new archive is written successfully.
+  new archive is written successfully. Each archive is written independently, so an
+  archive you did not change is never rewritten.
 
 ## Design notes
 

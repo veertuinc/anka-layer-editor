@@ -2,6 +2,7 @@
 #include "archive.h"
 
 #include <ncurses.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +12,7 @@
 #include <sys/stat.h>
 
 typedef struct {
-    const char *path;
+    const le_session *sess;
     le_model   *m;
     le_row     *rows;
     size_t      nrows;
@@ -24,7 +25,30 @@ typedef struct {
     int         show_help;
 } tui_state;
 
+/* Results of the archive picker that are not an archive index. */
+#define PICK_CANCEL (-1)
+#define PICK_ALL    (-2)
+
 /* ---- helpers ---- */
+
+/* Append to a fixed-size buffer, returning the new offset. Once the buffer is
+ * full the offset stops advancing, so callers can chain appends of unbounded
+ * text (archive labels, deep paths) without overrunning it. */
+static int str_append(char *buf, size_t cap, int off, const char *fmt, ...)
+    __attribute__((format(printf, 4, 5)));
+
+static int str_append(char *buf, size_t cap, int off, const char *fmt, ...) {
+    if (off < 0 || (size_t)off + 1 >= cap)
+        return (int)cap - 1;
+    va_list ap;
+    va_start(ap, fmt);
+    int wrote = vsnprintf(buf + off, cap - (size_t)off, fmt, ap);
+    va_end(ap);
+    if (wrote < 0)
+        return off;
+    off += wrote;
+    return (size_t)off + 1 >= cap ? (int)cap - 1 : off;
+}
 
 static void human_size(off_t s, char *buf, size_t n) {
     const char *unit[] = {"B", "K", "M", "G", "T"};
@@ -38,6 +62,10 @@ static void human_size(off_t s, char *buf, size_t n) {
         snprintf(buf, n, "%lldB", (long long)s);
     else
         snprintf(buf, n, "%.1f%s", v, unit[i]);
+}
+
+static int multi(const tui_state *st) {
+    return st->m->narchives > 1;
 }
 
 static int list_height(void) {
@@ -63,50 +91,101 @@ static void clamp_scroll(tui_state *st) {
         st->top = st->cursor - (size_t)h + 1;
 }
 
+/* Draw a full-width reverse-video bar (header, status, prompts). */
+static void draw_bar(int y, const char *text) {
+    attron(A_REVERSE);
+    mvaddnstr(y, 0, text, COLS);
+    for (int x = (int)strlen(text); x < COLS; x++)
+        mvaddch(y, x, ' ');
+    attroff(A_REVERSE);
+}
+
 /* ---- rendering ---- */
+
+/* Fixed-width membership column: one slot per archive, "1".."8" when the
+ * archive holds the path, '+' when it is a staged add, '.' when absent. */
+static void archive_badge(const tui_state *st, const le_node *n,
+                          char *buf, size_t len) {
+    buf[0] = '\0';
+    if (!multi(st) || len < (size_t)st->m->narchives + 5)
+        return;
+    size_t off = 0;
+    buf[off++] = '[';
+    for (int i = 0; i < st->m->narchives; i++) {
+        if (n->arch[i].added)
+            buf[off++] = '+';
+        else if (n->arch[i].present)
+            buf[off++] = (char)('1' + i);
+        else
+            buf[off++] = '.';
+    }
+    buf[off++] = ']';
+    buf[off++] = n->mismatch ? '!' : ' ';
+    buf[off++] = ' ';
+    buf[off] = '\0';
+}
 
 static void draw_row(tui_state *st, int screen_y, size_t idx) {
     le_row *r = &st->rows[idx];
     le_node *n = r->node;
     int selected = (idx == st->cursor);
-    int eff_removed = node_effectively_removed(n);
+
+    int slots[LE_MAX_ARCHIVES];
+    int nslots = node_archives(n, st->m->narchives, slots);
+    int explicit_removed = 0, removed_somewhere = 0, staged = 0;
+    int removed_everywhere = nslots > 0;
+    for (int i = 0; i < nslots; i++) {
+        int a = slots[i];
+        if (n->arch[a].removed)
+            explicit_removed = 1;
+        if (n->arch[a].added)
+            staged = 1;
+        if (node_effectively_removed(n, a))
+            removed_somewhere = 1;
+        else
+            removed_everywhere = 0;
+    }
 
     char flag = ' ';
-    if (n->removed)
+    if (explicit_removed)
         flag = 'X';                 /* explicitly marked */
-    else if (eff_removed)
+    else if (removed_somewhere)
         flag = '~';                 /* removed via ancestor */
 
+    char badge[LE_MAX_ARCHIVES + 8];
+    archive_badge(st, n, badge, sizeof(badge));
+
     char line[4096];
-    int off = 0;
-    off += snprintf(line + off, sizeof(line) - off, "%c ", flag);
-    for (int d = 0; d < r->depth && off < (int)sizeof(line) - 4; d++)
-        off += snprintf(line + off, sizeof(line) - off, "  ");
+    int off = str_append(line, sizeof(line), 0, "%c %s", flag, badge);
+    for (int d = 0; d < r->depth; d++)
+        off = str_append(line, sizeof(line), off, "  ");
 
     const char *marker = "  ";
     if (n->is_dir)
         marker = n->expanded ? "v " : "> ";
-    off += snprintf(line + off, sizeof(line) - off, "%s", marker);
+    off = str_append(line, sizeof(line), off, "%s", marker);
 
-    if (n->added)
-        off += snprintf(line + off, sizeof(line) - off, "[+] ");
+    if (staged)
+        off = str_append(line, sizeof(line), off, "[+] ");
 
-    off += snprintf(line + off, sizeof(line) - off, "%s%s",
-                    n->name, n->is_dir ? "/" : "");
+    off = str_append(line, sizeof(line), off, "%s%s",
+                     n->name, n->is_dir ? "/" : "");
 
     if (n->is_symlink)
-        off += snprintf(line + off, sizeof(line) - off, " -> %s", n->link);
+        str_append(line, sizeof(line), off, " -> %s", n->link);
     else if (!n->is_dir) {
         char sz[32];
         human_size(n->size, sz, sizeof(sz));
-        off += snprintf(line + off, sizeof(line) - off, "   (%s)", sz);
+        str_append(line, sizeof(line), off, "   (%s)", sz);
     }
 
     int attr = 0;
     if (selected)
         attr = A_REVERSE;
-    else if (eff_removed)
+    else if (removed_everywhere)
         attr = A_DIM;
+    else if (nslots > 1)
+        attr = A_BOLD;              /* path shared between archives */
 
     if (attr)
         attron(attr);
@@ -120,9 +199,9 @@ static void draw_row(tui_state *st, int screen_y, size_t idx) {
         attroff(attr);
 }
 
-static void draw_help(void) {
+static void draw_help(const tui_state *st) {
     const char *lines[] = {
-        "  anka-layer-editor — help",
+        "  anka-layer-editor - help",
         "",
         "  Up/Down, j/k    Move selection",
         "  Right / l       Expand directory (or step into)",
@@ -132,40 +211,55 @@ static void draw_help(void) {
         "  Space           Toggle mark-for-removal (subtree)",
         "  a               Add a host file at a destination path",
         "  /               Filter by substring (empty clears)",
-        "  s               Save archive in place",
+        "  s               Save every changed archive in place",
         "  q               Quit (confirms if unsaved)",
         "  ?               Toggle this help",
         "",
         "  Legend: 'X' marked, '~' removed via parent, '[+]' staged add",
+        NULL,
+    };
+    const char *multi_lines[] = {
         "",
-        "  Press any key to close help",
+        "  With several archives loaded, each row carries a membership column:",
+        "  [12] in both, [1.] only the first, [.+] staged into the second.",
+        "  Shared paths are bold; '!' means the entries disagree on type/size.",
+        "  Removing a shared path asks which archive (or all of them);",
+        "  adding a file asks which archive receives it.",
         NULL,
     };
     erase();
+    int y = 1;
     for (int i = 0; lines[i]; i++)
-        mvaddnstr(i + 1, 2, lines[i], COLS - 4);
+        mvaddnstr(y++, 2, lines[i], COLS - 4);
+    if (multi(st))
+        for (int i = 0; multi_lines[i]; i++)
+            mvaddnstr(y++, 2, multi_lines[i], COLS - 4);
+    mvaddnstr(y + 1, 2, "  Press any key to close help", COLS - 4);
     refresh();
 }
 
 static void draw(tui_state *st) {
     if (st->show_help) {
-        draw_help();
+        draw_help(st);
         return;
     }
 
     erase();
 
-    /* Header. */
-    char title[COLS + 1];
-    char pathcopy[PATH_MAX];
-    strlcpy(pathcopy, st->path, sizeof(pathcopy));
-    snprintf(title, sizeof(title), " anka-layer-editor — %s%s ",
-             basename(pathcopy), st->m->dirty ? "  [modified]" : "");
-    attron(A_REVERSE);
-    mvaddnstr(0, 0, title, COLS);
-    for (int x = (int)strlen(title); x < COLS; x++)
-        mvaddch(0, x, ' ');
-    attroff(A_REVERSE);
+    /* Header: the archive (or archives) being edited, '*' when unsaved. */
+    char title[1024];
+    int off = str_append(title, sizeof(title), 0, " anka-layer-editor - ");
+    if (multi(st)) {
+        for (int i = 0; i < st->sess->count; i++)
+            off = str_append(title, sizeof(title), off, "%d:%s%s  ",
+                             i + 1, session_label(st->sess, i),
+                             st->m->arch_dirty[i] ? "*" : "");
+    } else {
+        str_append(title, sizeof(title), off, "%s%s ",
+                   session_label(st->sess, 0),
+                   st->m->dirty ? "  [modified]" : "");
+    }
+    draw_bar(0, title);
 
     /* List. */
     int h = list_height();
@@ -182,20 +276,16 @@ static void draw(tui_state *st) {
     }
 
     /* Status bar. */
-    char status[COLS + 1];
-    int off = snprintf(status, sizeof(status),
-                       " %zu entries | marked: %zu | staged: %zu",
-                       st->m->total, st->m->marked, st->m->added);
+    char status[1024];
+    off = str_append(status, sizeof(status), 0,
+                     " %zu paths | marked: %zu | staged: %zu",
+                     st->m->total, st->m->marked, st->m->added);
     if (st->filtering)
-        off += snprintf(status + off, sizeof(status) - off,
-                        " | filter: \"%s\"", st->filter);
+        off = str_append(status, sizeof(status), off, " | filter: \"%s\"",
+                         st->filter);
     if (st->msg[0])
-        off += snprintf(status + off, sizeof(status) - off, " | %s", st->msg);
-    attron(A_REVERSE);
-    mvaddnstr(LINES - 1, 0, status, COLS);
-    for (int x = (int)strlen(status); x < COLS; x++)
-        mvaddch(LINES - 1, x, ' ');
-    attroff(A_REVERSE);
+        str_append(status, sizeof(status), off, " | %s", st->msg);
+    draw_bar(LINES - 1, status);
 
     refresh();
 }
@@ -234,6 +324,35 @@ static int confirm(const char *question) {
     return ch == 'y' || ch == 'Y';
 }
 
+/* Ask which of the candidate archives an action applies to. Returns an archive
+ * index, PICK_ALL when allow_all and the user chose all, or PICK_CANCEL. */
+static int prompt_archive(tui_state *st, const char *action, const int *slots,
+                          int nslots, int allow_all) {
+    char line[1024];
+    int off = str_append(line, sizeof(line), 0, " %s: ", action);
+    for (int i = 0; i < nslots; i++)
+        off = str_append(line, sizeof(line), off, "[%d] %s  ",
+                         slots[i] + 1, session_label(st->sess, slots[i]));
+    if (allow_all)
+        off = str_append(line, sizeof(line), off, "[a] all  ");
+    str_append(line, sizeof(line), off, "(Esc cancels)");
+
+    move(LINES - 1, 0);
+    clrtoeol();
+    draw_bar(LINES - 1, line);
+
+    int ch = getch();
+    if (allow_all && (ch == 'a' || ch == 'A'))
+        return PICK_ALL;
+    if (ch >= '1' && ch <= '9') {
+        int idx = ch - '1';
+        for (int i = 0; i < nslots; i++)
+            if (slots[i] == idx)
+                return idx;
+    }
+    return PICK_CANCEL;
+}
+
 /* ---- navigation ---- */
 
 static void move_to_parent(tui_state *st) {
@@ -259,9 +378,40 @@ static void select_node(tui_state *st, le_node *target) {
 
 /* ---- actions ---- */
 
+static void action_toggle_removed(tui_state *st, le_node *n) {
+    int slots[LE_MAX_ARCHIVES];
+    int nslots = node_archives(n, st->m->narchives, slots);
+    if (nslots == 0) {
+        snprintf(st->msg, sizeof(st->msg), "not present in any archive");
+        return;
+    }
+    if (nslots == 1) {
+        model_toggle_removed(st->m, n, slots[0]);
+        snprintf(st->msg, sizeof(st->msg), "%s",
+                 n->arch[slots[0]].removed ? "marked for removal" : "unmarked");
+        return;
+    }
+
+    int pick = prompt_archive(st, "Mark for removal in", slots, nslots, 1);
+    if (pick == PICK_CANCEL) {
+        snprintf(st->msg, sizeof(st->msg), "cancelled");
+        return;
+    }
+    if (pick == PICK_ALL) {
+        model_toggle_removed_all(st->m, n);
+        snprintf(st->msg, sizeof(st->msg), "%s in all %d archives",
+                 n->arch[slots[0]].removed ? "marked" : "unmarked", nslots);
+        return;
+    }
+    model_toggle_removed(st->m, n, pick);
+    snprintf(st->msg, sizeof(st->msg), "%s in %s",
+             n->arch[pick].removed ? "marked" : "unmarked",
+             session_label(st->sess, pick));
+}
+
 static void action_add(tui_state *st) {
     char host[PATH_MAX], dest[PATH_MAX];
-    if (!prompt("Add — host file path: ", host, sizeof(host))) {
+    if (!prompt("Add - host file path: ", host, sizeof(host))) {
         snprintf(st->msg, sizeof(st->msg), "add cancelled");
         return;
     }
@@ -274,10 +424,24 @@ static void action_add(tui_state *st) {
         snprintf(st->msg, sizeof(st->msg), "not a regular file or symlink");
         return;
     }
-    if (!prompt("Add — destination path in archive: ", dest, sizeof(dest))) {
+    if (!prompt("Add - destination path in archive: ", dest, sizeof(dest))) {
         snprintf(st->msg, sizeof(st->msg), "add cancelled");
         return;
     }
+
+    int target = 0;
+    if (multi(st)) {
+        int slots[LE_MAX_ARCHIVES];
+        for (int i = 0; i < st->m->narchives; i++)
+            slots[i] = i;
+        target = prompt_archive(st, "Add to which archive", slots,
+                                st->m->narchives, 0);
+        if (target < 0) {
+            snprintf(st->msg, sizeof(st->msg), "add cancelled");
+            return;
+        }
+    }
+
     int sym = S_ISLNK(sb.st_mode);
     char linktgt[PATH_MAX] = "";
     if (sym) {
@@ -288,7 +452,7 @@ static void action_add(tui_state *st) {
         }
         linktgt[l] = '\0';
     }
-    le_node *n = model_add_host(st->m, dest, host, sym,
+    le_node *n = model_add_host(st->m, dest, target, host, sym,
                                 sym ? 0 : sb.st_size, sb.st_mode,
                                 sym ? linktgt : NULL);
     if (!n) {
@@ -301,7 +465,11 @@ static void action_add(tui_state *st) {
     }
     rebuild_rows(st);
     select_node(st, n);
-    snprintf(st->msg, sizeof(st->msg), "staged: %s", dest);
+    if (multi(st))
+        snprintf(st->msg, sizeof(st->msg), "staged in %s: %s",
+                 session_label(st->sess, target), dest);
+    else
+        snprintf(st->msg, sizeof(st->msg), "staged: %s", dest);
 }
 
 static void action_filter(tui_state *st) {
@@ -320,22 +488,43 @@ static void action_filter(tui_state *st) {
     rebuild_rows(st);
 }
 
+/* Save every archive with unsaved changes, stopping at the first failure so a
+ * broken archive does not hide behind later successes. */
 static void action_save(tui_state *st) {
     char err[256] = "";
-    if (archive_save(st->path, st->m, err, sizeof(err)) == 0) {
-        rebuild_rows(st);
-        snprintf(st->msg, sizeof(st->msg), "saved %zu entries", st->m->total);
-    } else {
-        snprintf(st->msg, sizeof(st->msg), "SAVE FAILED: %s", err);
+    int saved = 0, failed = -1;
+
+    for (int i = 0; i < st->m->narchives; i++) {
+        if (!st->m->arch_dirty[i])
+            continue;
+        if (archive_save(session_path(st->sess, i), st->m, i, err,
+                         sizeof(err)) == 0)
+            saved++;
+        else {
+            failed = i;
+            break;
+        }
     }
+    rebuild_rows(st);
+
+    if (failed >= 0)
+        snprintf(st->msg, sizeof(st->msg), "saved %d, SAVE FAILED %s: %s",
+                 saved, session_label(st->sess, failed), err);
+    else if (saved == 0)
+        snprintf(st->msg, sizeof(st->msg), "nothing to save");
+    else if (multi(st))
+        snprintf(st->msg, sizeof(st->msg), "saved %d archive%s", saved,
+                 saved == 1 ? "" : "s");
+    else
+        snprintf(st->msg, sizeof(st->msg), "saved %zu entries", st->m->total);
 }
 
 /* ---- main loop ---- */
 
-int tui_run(const char *archive_path, le_model *m) {
+int tui_run(const le_session *sess, le_model *m) {
     tui_state st;
     memset(&st, 0, sizeof(st));
-    st.path = archive_path;
+    st.sess = sess;
     st.m = m;
 
     if (!initscr())
@@ -409,11 +598,8 @@ int tui_run(const char *archive_path, le_model *m) {
             }
             break;
         case ' ':
-            if (cur) {
-                model_toggle_removed(st.m, cur);
-                snprintf(st.msg, sizeof(st.msg),
-                         cur->removed ? "marked for removal" : "unmarked");
-            }
+            if (cur)
+                action_toggle_removed(&st, cur);
             break;
         case 'a':
             action_add(&st);
@@ -429,7 +615,7 @@ int tui_run(const char *archive_path, le_model *m) {
             break;
         case 'q':
             if (!st.m->dirty ||
-                confirm("Unsaved changes — quit without saving? (y/N) "))
+                confirm("Unsaved changes - quit without saving? (y/N) "))
                 running = 0;
             break;
         case KEY_RESIZE:

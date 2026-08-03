@@ -24,6 +24,10 @@ static int is_root_path(const char *p) {
     return p[0] == '\0' || (p[0] == '.' && p[1] == '\0');
 }
 
+static int valid_arch(const le_model *m, int arch_idx) {
+    return arch_idx >= 0 && arch_idx < m->narchives;
+}
+
 /* ---- children (sorted array) ---- */
 
 /* Lower-bound index for name; sets *found when an exact match exists. */
@@ -80,7 +84,7 @@ static le_node *child_find_or_add(le_node *p, const char *name, int *created) {
 
 /* ---- model lifecycle ---- */
 
-le_model *model_new(void) {
+le_model *model_new(int narchives) {
     le_model *m = calloc(1, sizeof(*m));
     if (!m)
         return NULL;
@@ -89,6 +93,11 @@ le_model *model_new(void) {
         free(m);
         return NULL;
     }
+    if (narchives < 1)
+        narchives = 1;
+    if (narchives > LE_MAX_ARCHIVES)
+        narchives = LE_MAX_ARCHIVES;
+    m->narchives = narchives;
     m->root->is_dir = 1;
     m->root->expanded = 1;
     return m;
@@ -99,8 +108,9 @@ static void node_free(le_node *n) {
         node_free(n->children[i]);
     free(n->children);
     free(n->name);
-    free(n->host_path);
     free(n->link);
+    for (int i = 0; i < LE_MAX_ARCHIVES; i++)
+        free(n->arch[i].host_path);
     free(n);
 }
 
@@ -113,9 +123,11 @@ void model_free(le_model *m) {
 
 /* ---- insertion ---- */
 
-le_node *model_insert(le_model *m, const char *path, int is_dir,
-                      int is_symlink, off_t size, mode_t mode,
-                      const char *link) {
+/* Create every node along path, returning the leaf. Interior components become
+ * directories. When mark_present, each component is recorded as belonging to
+ * arch_idx (staged additions do not exist in the archive yet, so they don't). */
+static le_node *path_create(le_model *m, const char *path, int arch_idx,
+                            int mark_present) {
     le_node *cur = m->root;
     const char *p = normalize_path(path);
     if (is_root_path(p))
@@ -134,46 +146,84 @@ le_node *model_insert(le_model *m, const char *path, int is_dir,
         memcpy(comp, p, clen);
         comp[clen] = '\0';
 
-        int final = !slash || slash[1] == '\0';
         int created = 0;
         cur = child_find_or_add(cur, comp, &created);
         if (!cur)
             return NULL;
         if (created)
             m->total++;
-        if (!final)
-            cur->is_dir = 1;             /* interior component is a directory */
+        if (mark_present)
+            cur->arch[arch_idx].present = 1;
+        if (slash && slash[1] != '\0') {  /* interior component is a directory */
+            if (cur->meta_set && !cur->is_dir)
+                cur->mismatch = 1;       /* another archive has a file here */
+            cur->is_dir = 1;
+        }
         if (!slash)
             break;
         p = slash + 1;
     }
 
-    if (cur == m->root)                  /* empty/degenerate path */
-        return NULL;
-
-    if (is_dir)
-        cur->is_dir = 1;
-    cur->is_symlink = is_symlink;
-    cur->size = size;
-    cur->mode = mode;
-    if (link) {
-        free(cur->link);
-        cur->link = strdup(link);
-    }
-    return cur;
+    return cur == m->root ? NULL : cur;  /* empty/degenerate path */
 }
 
-le_node *model_add_host(le_model *m, const char *dest, const char *host_path,
-                        int is_symlink, off_t size, mode_t mode,
-                        const char *link) {
-    le_node *n = model_insert(m, dest, 0, is_symlink, size, mode, link);
+/* Adopt display metadata from an explicit archive entry, or flag a conflict
+ * when another archive already described this path differently. */
+static void apply_metadata(le_node *n, int is_dir, int is_symlink, off_t size,
+                           mode_t mode, const char *link) {
+    if (n->meta_set) {
+        if (!!is_dir != !!n->is_dir || !!is_symlink != !!n->is_symlink ||
+            (!is_dir && size != n->size))
+            n->mismatch = 1;
+        return;
+    }
+    if (!is_dir && n->is_dir)
+        n->mismatch = 1;                 /* inferred as a dir elsewhere */
+    if (is_dir)
+        n->is_dir = 1;
+    n->is_symlink = is_symlink;
+    n->size = size;
+    n->mode = mode;
+    if (link) {
+        free(n->link);
+        n->link = strdup(link);
+    }
+    n->meta_set = 1;
+}
+
+le_node *model_insert(le_model *m, const char *path, int arch_idx, int is_dir,
+                      int is_symlink, off_t size, mode_t mode,
+                      const char *link) {
+    if (!valid_arch(m, arch_idx))
+        return NULL;
+    le_node *n = path_create(m, path, arch_idx, 1);
     if (!n)
         return NULL;
-    if (!n->added)
+    apply_metadata(n, is_dir, is_symlink, size, mode, link);
+    return n;
+}
+
+le_node *model_add_host(le_model *m, const char *dest, int arch_idx,
+                        const char *host_path, int is_symlink, off_t size,
+                        mode_t mode, const char *link) {
+    if (!valid_arch(m, arch_idx))
+        return NULL;
+    le_node *n = path_create(m, dest, arch_idx, 0);
+    if (!n)
+        return NULL;
+
+    /* An explicit add describes the file better than an inherited entry. */
+    n->meta_set = 0;
+    apply_metadata(n, 0, is_symlink, size, mode, link);
+
+    if (!n->arch[arch_idx].added) {
+        m->arch_added[arch_idx]++;
         m->added++;
-    n->added = 1;
-    free(n->host_path);
-    n->host_path = strdup(host_path);
+    }
+    n->arch[arch_idx].added = 1;
+    free(n->arch[arch_idx].host_path);
+    n->arch[arch_idx].host_path = strdup(host_path);
+    m->arch_dirty[arch_idx] = 1;
     m->dirty = 1;
     for (le_node *a = n->parent; a && a->parent; a = a->parent)
         a->expanded = 1;                 /* reveal the addition */
@@ -208,22 +258,67 @@ le_node *model_lookup(le_model *m, const char *path) {
     return cur == m->root ? NULL : cur;
 }
 
-int node_effectively_removed(const le_node *n) {
+int node_in_archive(const le_node *n, int arch_idx) {
+    if (!n || arch_idx < 0 || arch_idx >= LE_MAX_ARCHIVES)
+        return 0;
+    return n->arch[arch_idx].present || n->arch[arch_idx].added;
+}
+
+int node_archives(const le_node *n, int narchives, int *out) {
+    int count = 0;
+    if (narchives > LE_MAX_ARCHIVES)
+        narchives = LE_MAX_ARCHIVES;
+    for (int i = 0; i < narchives; i++)
+        if (node_in_archive(n, i))
+            out[count++] = i;
+    return count;
+}
+
+int node_effectively_removed(const le_node *n, int arch_idx) {
+    if (arch_idx < 0 || arch_idx >= LE_MAX_ARCHIVES)
+        return 0;
     for (const le_node *c = n; c; c = c->parent)
-        if (c->removed)
+        if (c->arch[arch_idx].removed)
             return 1;
     return 0;
 }
 
-void model_toggle_removed(le_model *m, le_node *n) {
-    if (n == m->root)
+static void set_removed(le_model *m, le_node *n, int arch_idx, int removed) {
+    if (!!n->arch[arch_idx].removed == !!removed)
         return;
-    n->removed = !n->removed;
-    if (n->removed)
+    n->arch[arch_idx].removed = removed ? 1 : 0;
+    if (removed) {
+        m->arch_marked[arch_idx]++;
         m->marked++;
-    else if (m->marked)
-        m->marked--;
+    } else {
+        if (m->arch_marked[arch_idx])
+            m->arch_marked[arch_idx]--;
+        if (m->marked)
+            m->marked--;
+    }
+    m->arch_dirty[arch_idx] = 1;
     m->dirty = 1;
+}
+
+void model_toggle_removed(le_model *m, le_node *n, int arch_idx) {
+    if (!n || n == m->root || !valid_arch(m, arch_idx))
+        return;
+    if (!node_in_archive(n, arch_idx))
+        return;
+    set_removed(m, n, arch_idx, !n->arch[arch_idx].removed);
+}
+
+void model_toggle_removed_all(le_model *m, le_node *n) {
+    if (!n || n == m->root)
+        return;
+    int slots[LE_MAX_ARCHIVES];
+    int count = node_archives(n, m->narchives, slots);
+    int any_removed = 0;
+    for (int i = 0; i < count; i++)
+        if (n->arch[slots[i]].removed)
+            any_removed = 1;
+    for (int i = 0; i < count; i++)
+        set_removed(m, n, slots[i], !any_removed);
 }
 
 int node_path(const le_node *n, char *buf, size_t len) {
@@ -269,21 +364,51 @@ static void child_remove_at(le_node *parent, size_t idx) {
     node_free(victim);
 }
 
-static void reconcile_node(le_node *n) {
-    /* Walk children first so removals are bottom-up safe. */
+/* Forget everything one archive knew about this subtree. */
+static void clear_arch_subtree(le_node *n, int arch_idx) {
+    n->arch[arch_idx].present = 0;
+    n->arch[arch_idx].removed = 0;
+    n->arch[arch_idx].added = 0;
+    free(n->arch[arch_idx].host_path);
+    n->arch[arch_idx].host_path = NULL;
+    for (size_t i = 0; i < n->nchildren; i++)
+        clear_arch_subtree(n->children[i], arch_idx);
+}
+
+/* True while any archive still holds this path or one below it. */
+static int subtree_in_use(const le_node *n, int narchives) {
+    for (int i = 0; i < narchives; i++)
+        if (node_in_archive(n, i))
+            return 1;
+    for (size_t i = 0; i < n->nchildren; i++)
+        if (subtree_in_use(n->children[i], narchives))
+            return 1;
+    return 0;
+}
+
+static void reconcile_node(le_node *n, int arch_idx, int narchives) {
+    /* Walk children first so pruning is bottom-up safe. */
     for (size_t i = 0; i < n->nchildren; ) {
         le_node *c = n->children[i];
-        if (c->removed) {
+        if (c->arch[arch_idx].removed) {
+            clear_arch_subtree(c, arch_idx);
+        } else {
+            if (c->arch[arch_idx].added) {
+                /* The staged file is now a member of that archive. */
+                c->arch[arch_idx].added = 0;
+                free(c->arch[arch_idx].host_path);
+                c->arch[arch_idx].host_path = NULL;
+                c->arch[arch_idx].present = 1;
+                for (le_node *a = c->parent; a && a->parent; a = a->parent)
+                    a->arch[arch_idx].present = 1;
+            }
+            reconcile_node(c, arch_idx, narchives);
+        }
+        if (!subtree_in_use(c, narchives)) {
             child_remove_at(n, i);
             continue;
         }
-        reconcile_node(c);
         i++;
-    }
-    if (n->added) {
-        n->added = 0;
-        free(n->host_path);
-        n->host_path = NULL;
     }
 }
 
@@ -296,14 +421,25 @@ static size_t count_members(const le_node *n) {
     return total;
 }
 
-void model_reconcile_after_save(le_model *m) {
-    if (!m || !m->root)
+void model_reconcile_after_save(le_model *m, int arch_idx) {
+    if (!m || !m->root || !valid_arch(m, arch_idx))
         return;
-    reconcile_node(m->root);
+    reconcile_node(m->root, arch_idx, m->narchives);
+
+    m->arch_marked[arch_idx] = 0;
+    m->arch_added[arch_idx] = 0;
+    m->arch_dirty[arch_idx] = 0;
+
     m->marked = 0;
     m->added = 0;
-    m->total = count_members(m->root);
     m->dirty = 0;
+    for (int i = 0; i < m->narchives; i++) {
+        m->marked += m->arch_marked[i];
+        m->added += m->arch_added[i];
+        if (m->arch_dirty[i])
+            m->dirty = 1;
+    }
+    m->total = count_members(m->root);
 }
 
 /* ---- flatten ---- */

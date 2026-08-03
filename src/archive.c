@@ -1,9 +1,9 @@
 #include "archive.h"
 #include "tar.h"
+#include "util.h"
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
@@ -13,19 +13,16 @@
 
 #define COPY_BUF (1 << 16)
 
-static void seterr(char *err, size_t errlen, const char *fmt, ...) {
-    if (!err || !errlen)
-        return;
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(err, errlen, fmt, ap);
-    va_end(ap);
-}
+int archive_load(const char *path, le_model *m, int arch_idx,
+                 char *err, size_t errlen) {
+    if (arch_idx < 0 || arch_idx >= m->narchives) {
+        le_seterr(err, errlen, "%s: invalid archive slot %d", path, arch_idx);
+        return -1;
+    }
 
-int archive_load(const char *path, le_model *m, char *err, size_t errlen) {
     tar_t *in = tar_ropen(path);
     if (!in) {
-        seterr(err, errlen, "%s: cannot open: %s", path, strerror(errno));
+        le_seterr(err, errlen, "%s: cannot open: %s", path, strerror(errno));
         return -1;
     }
 
@@ -40,16 +37,17 @@ int archive_load(const char *path, le_model *m, char *err, size_t errlen) {
             p++;
         int skip_insert = (p[0] == '\0' || (p[0] == '.' && p[1] == '\0'));
         if (!skip_insert) {
-            le_node *n = model_insert(m, e.path, is_dir, is_sym, e.size, e.mode,
-                                      is_sym ? e.link : NULL);
+            le_node *n = model_insert(m, e.path, arch_idx, is_dir, is_sym,
+                                      e.size, e.mode, is_sym ? e.link : NULL);
             if (!n) {
-                seterr(err, errlen, "%s: failed to insert path '%s'", path, e.path);
+                le_seterr(err, errlen, "%s: failed to insert path '%s'", path,
+                          e.path);
                 tar_close(in);
                 return -1;
             }
         }
         if (tar_skip_data(in) == -1) {
-            seterr(err, errlen, "%s: skip error", path);
+            le_seterr(err, errlen, "%s: skip error", path);
             tar_close(in);
             return -1;
         }
@@ -57,7 +55,7 @@ int archive_load(const char *path, le_model *m, char *err, size_t errlen) {
 
     tar_close(in);
     if (r < 0) {
-        seterr(err, errlen, "%s: read error", path);
+        le_seterr(err, errlen, "%s: read error", path);
         return -1;
     }
     return 0;
@@ -74,17 +72,18 @@ static int copy_data(tar_t *in, tar_t *out) {
 }
 
 /* Write one staged addition (regular file or symlink) from the host. */
-static int write_addition(tar_t *out, const le_node *n,
+static int write_addition(tar_t *out, const le_node *n, int arch_idx,
                           char *err, size_t errlen) {
+    const char *host_path = n->arch[arch_idx].host_path;
     char guest[PATH_MAX];
     if (node_path(n, guest, sizeof(guest)) == -1) {
-        seterr(err, errlen, "path too deep for node '%s'", n->name);
+        le_seterr(err, errlen, "path too deep for node '%s'", n->name);
         return -1;
     }
 
     struct stat st;
-    if (lstat(n->host_path, &st) == -1) {
-        seterr(err, errlen, "%s: %s", n->host_path, strerror(errno));
+    if (lstat(host_path, &st) == -1) {
+        le_seterr(err, errlen, "%s: %s", host_path, strerror(errno));
         return -1;
     }
 
@@ -98,9 +97,9 @@ static int write_addition(tar_t *out, const le_node *n,
 
     if (S_ISLNK(st.st_mode)) {
         char tgt[PATH_MAX];
-        ssize_t l = readlink(n->host_path, tgt, sizeof(tgt) - 1);
+        ssize_t l = readlink(host_path, tgt, sizeof(tgt) - 1);
         if (l == -1) {
-            seterr(err, errlen, "%s: %s", n->host_path, strerror(errno));
+            le_seterr(err, errlen, "%s: %s", host_path, strerror(errno));
             return -1;
         }
         tgt[l] = '\0';
@@ -110,7 +109,7 @@ static int write_addition(tar_t *out, const le_node *n,
     }
 
     if (!S_ISREG(st.st_mode)) {
-        seterr(err, errlen, "%s: not a regular file or symlink", n->host_path);
+        le_seterr(err, errlen, "%s: not a regular file or symlink", host_path);
         return -1;
     }
 
@@ -119,9 +118,9 @@ static int write_addition(tar_t *out, const le_node *n,
     if (tar_write_header(out, &e) == -1)
         return -1;
 
-    FILE *f = fopen(n->host_path, "rb");
+    FILE *f = fopen(host_path, "rb");
     if (!f) {
-        seterr(err, errlen, "%s: %s", n->host_path, strerror(errno));
+        le_seterr(err, errlen, "%s: %s", host_path, strerror(errno));
         return -1;
     }
     char buf[COPY_BUF];
@@ -139,34 +138,42 @@ static int write_addition(tar_t *out, const le_node *n,
         rc = -1;
     fclose(f);
     if (rc == 0 && written != st.st_size) {
-        seterr(err, errlen, "%s: size changed during read (%lld -> %lld)",
-               n->host_path, (long long)st.st_size, (long long)written);
+        le_seterr(err, errlen, "%s: size changed during read (%lld -> %lld)",
+                  host_path, (long long)st.st_size, (long long)written);
         return -1;
     }
     return rc;
 }
 
-static int append_additions(tar_t *out, le_node *node,
+static int append_additions(tar_t *out, le_node *node, int arch_idx,
                             char *err, size_t errlen) {
     for (size_t i = 0; i < node->nchildren; i++) {
         le_node *c = node->children[i];
-        if (node_effectively_removed(c))
+        if (node_effectively_removed(c, arch_idx))
             continue;
-        if (c->added && c->host_path && write_addition(out, c, err, errlen) == -1)
+        if (c->arch[arch_idx].added && c->arch[arch_idx].host_path &&
+            write_addition(out, c, arch_idx, err, errlen) == -1)
             return -1;
-        if (append_additions(out, c, err, errlen) == -1)
+        if (append_additions(out, c, arch_idx, err, errlen) == -1)
             return -1;
     }
     return 0;
 }
 
 /* Skip an original member when it is marked removed (incl. via ancestor) or
- * replaced by a staged host addition at the same path. */
-static int should_skip_original(const le_node *n) {
-    return n && (node_effectively_removed(n) || n->added);
+ * replaced by a staged host addition at the same path, in this archive. */
+static int should_skip_original(const le_node *n, int arch_idx) {
+    return n && (node_effectively_removed(n, arch_idx) ||
+                 n->arch[arch_idx].added);
 }
 
-int archive_save(const char *path, le_model *m, char *err, size_t errlen) {
+int archive_save(const char *path, le_model *m, int arch_idx,
+                 char *err, size_t errlen) {
+    if (arch_idx < 0 || arch_idx >= m->narchives) {
+        le_seterr(err, errlen, "%s: invalid archive slot %d", path, arch_idx);
+        return -1;
+    }
+
     /* Temp file in the same directory for an atomic rename. */
     char dirbuf[PATH_MAX];
     strlcpy(dirbuf, path, sizeof(dirbuf));
@@ -176,12 +183,12 @@ int archive_save(const char *path, le_model *m, char *err, size_t errlen) {
 
     tar_t *out = tar_wopen(tmp, 6);
     if (!out) {
-        seterr(err, errlen, "%s: cannot create temp: %s", tmp, strerror(errno));
+        le_seterr(err, errlen, "%s: cannot create temp: %s", tmp, strerror(errno));
         return -1;
     }
     tar_t *in = tar_ropen(path);
     if (!in) {
-        seterr(err, errlen, "%s: cannot reopen: %s", path, strerror(errno));
+        le_seterr(err, errlen, "%s: cannot reopen: %s", path, strerror(errno));
         tar_close(out);
         unlink(tmp);
         return -1;
@@ -192,43 +199,43 @@ int archive_save(const char *path, le_model *m, char *err, size_t errlen) {
     int r, failed = 0;
     while ((r = tar_read_next(in, &e)) == 1) {
         le_node *n = model_lookup(m, e.path);
-        if (should_skip_original(n)) {
+        if (should_skip_original(n, arch_idx)) {
             if (tar_skip_data(in) == -1) {
-                seterr(err, errlen, "%s: skip error", path);
+                le_seterr(err, errlen, "%s: skip error", path);
                 failed = 1;
                 break;
             }
             continue;
         }
         if (tar_write_header(out, &e) == -1) {
-            seterr(err, errlen, "%s: write error", tmp);
+            le_seterr(err, errlen, "%s: write error", tmp);
             failed = 1;
             break;
         }
         /* Copy any payload bytes (files, and rare non-file sized entries). */
         if (e.size > 0 && e.type != TAR_SYMLINK) {
             if (copy_data(in, out) == -1) {
-                seterr(err, errlen, "%s: copy error", tmp);
+                le_seterr(err, errlen, "%s: copy error", tmp);
                 failed = 1;
                 break;
             }
         } else if (tar_skip_data(in) == -1) {
-            seterr(err, errlen, "%s: skip error", path);
+            le_seterr(err, errlen, "%s: skip error", path);
             failed = 1;
             break;
         }
     }
     if (r < 0) {
-        seterr(err, errlen, "%s: read error", path);
+        le_seterr(err, errlen, "%s: read error", path);
         failed = 1;
     }
     tar_close(in);
 
-    if (!failed && append_additions(out, m->root, err, errlen) == -1)
+    if (!failed && append_additions(out, m->root, arch_idx, err, errlen) == -1)
         failed = 1;
 
     if (tar_close(out) == -1 && !failed) {
-        seterr(err, errlen, "%s: finalize error", tmp);
+        le_seterr(err, errlen, "%s: finalize error", tmp);
         failed = 1;
     }
 
@@ -238,11 +245,11 @@ int archive_save(const char *path, le_model *m, char *err, size_t errlen) {
     }
 
     if (rename(tmp, path) == -1) {
-        seterr(err, errlen, "%s -> %s: %s", tmp, path, strerror(errno));
+        le_seterr(err, errlen, "%s -> %s: %s", tmp, path, strerror(errno));
         unlink(tmp);
         return -1;
     }
 
-    model_reconcile_after_save(m);
+    model_reconcile_after_save(m, arch_idx);
     return 0;
 }
