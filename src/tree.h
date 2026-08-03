@@ -43,6 +43,8 @@ typedef struct le_node {
 
     int               expanded;     /* UI: directory expansion state */
     int               filter_hit;   /* transient: subtree matches active filter */
+    int               shared_warn;  /* transient: a non-directory under this
+                                     * path (or this file) is in 2+ archives */
 } le_node;
 
 typedef struct {

@@ -5,5 +5,8 @@ src/*.o
 *.dSYM/
 tests/roundtrip_test
 
+# Fixture build scratch
+testdata/.stage/
+
 # Editor/OS noise
 .DS_Store

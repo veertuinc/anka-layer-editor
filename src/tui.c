@@ -29,6 +29,10 @@ typedef struct {
 #define PICK_CANCEL (-1)
 #define PICK_ALL    (-2)
 
+/* Color pair for paths that exist in more than one archive (and their parents). */
+#define PAIR_SHARED 1
+static int have_shared_color;
+
 /* ---- helpers ---- */
 
 /* Append to a fixed-size buffer, returning the new offset. Once the buffer is
@@ -101,6 +105,27 @@ static void draw_bar(int y, const char *text) {
 }
 
 /* ---- rendering ---- */
+
+/* Mark files that belong to 2+ archives, and paint their ancestors yellow so
+ * collapsed folders point the way. Directories themselves never warn just for
+ * being present in several archives. */
+static int mark_shared_warn(le_node *n, int narchives) {
+    int slots[LE_MAX_ARCHIVES];
+    int self = !n->is_dir && node_archives(n, narchives, slots) > 1;
+    int below = 0;
+    for (size_t i = 0; i < n->nchildren; i++)
+        if (mark_shared_warn(n->children[i], narchives))
+            below = 1;
+    n->shared_warn = self || below;
+    return n->shared_warn;
+}
+
+static void refresh_shared_warn(tui_state *st) {
+    if (!multi(st))
+        return;
+    mark_shared_warn(st->m->root, st->m->narchives);
+    st->m->root->shared_warn = 0;   /* root is not a visible row */
+}
 
 /* Fixed-width membership column: one slot per archive, "1".."8" when the
  * archive holds the path, '+' when it is a staged add, '.' when absent. */
@@ -184,8 +209,14 @@ static void draw_row(tui_state *st, int screen_y, size_t idx) {
         attr = A_REVERSE;
     else if (removed_everywhere)
         attr = A_DIM;
-    else if (nslots > 1)
-        attr = A_BOLD;              /* path shared between archives */
+
+    /* Yellow warning for shared paths and any parent that leads to one. */
+    if (n->shared_warn && !removed_everywhere) {
+        if (have_shared_color)
+            attr |= COLOR_PAIR(PAIR_SHARED);
+        else if (!selected)
+            attr |= A_BOLD;         /* no color: keep shared rows obvious */
+    }
 
     if (attr)
         attron(attr);
@@ -222,7 +253,8 @@ static void draw_help(const tui_state *st) {
         "",
         "  With several archives loaded, each row carries a membership column:",
         "  [12] in both, [1.] only the first, [.+] staged into the second.",
-        "  Shared paths are bold; '!' means the entries disagree on type/size.",
+        "  Files in more than one archive are yellow; parents leading to them too.",
+        "  '!' means the entries disagree on type/size.",
         "  Removing a shared path asks which archive (or all of them);",
         "  adding a file asks which archive receives it.",
         NULL,
@@ -245,6 +277,7 @@ static void draw(tui_state *st) {
     }
 
     erase();
+    refresh_shared_warn(st);
 
     /* Header: the archive (or archives) being edited, '*' when unsaved. */
     char title[1024];
@@ -533,6 +566,15 @@ int tui_run(const le_session *sess, le_model *m) {
     noecho();
     keypad(stdscr, TRUE);
     curs_set(0);
+
+    have_shared_color = 0;
+    if (has_colors() && start_color() != ERR) {
+        /* Prefer the terminal default background so yellow sits on the
+         * normal list color rather than a hard-coded black panel. */
+        use_default_colors();
+        if (init_pair(PAIR_SHARED, COLOR_YELLOW, -1) != ERR)
+            have_shared_color = 1;
+    }
 
     rebuild_rows(&st);
 

@@ -78,6 +78,9 @@ Pass more than one archive to browse them together:
 anka-layer-editor layer-a.tar.gz layer-b.tar.gz
 ```
 
+Tiny Homebrew-style fixtures for trying this live are in [`testdata/`](testdata/)
+(regenerate with `./testdata/build.sh`).
+
 Every path appears once, and a membership column shows which archives hold it:
 
 ```
@@ -87,9 +90,11 @@ X [12]  v etc/          both archives contain etc/
   [.+]      added.txt   staged into the second archive, not saved yet
 ```
 
-Shared rows are bold, so overlap between layers stands out while you browse. A `!`
-after the column means the archives disagree about the entry's type or size. Paths
-are matched by name only; file contents are never hashed or compared.
+Files that exist in more than one archive are yellow. Parent folders that lead to
+such a file are yellow too, so you can expand down toward the overlap; folders that
+merely appear in several archives without a shared file underneath stay normal. A
+`!` after the column means the entries disagree about the entry's type or size.
+Paths are matched by name only; file contents are never hashed or compared.
 
 Edits stay scoped to an archive:
 
