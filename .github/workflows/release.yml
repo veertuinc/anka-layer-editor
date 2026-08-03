@@ -20,7 +20,7 @@ jobs:
       version: ${{ steps.norm.outputs.version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -62,7 +62,7 @@ jobs:
             target: linux-amd64
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install dependencies (Ubuntu)
         if: runner.os == 'Linux'
@@ -80,7 +80,7 @@ jobs:
           ls -la "anka-layer-editor-${{ matrix.target }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: anka-layer-editor-${{ matrix.target }}
           path: anka-layer-editor-${{ matrix.target }}
@@ -93,12 +93,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Download binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           pattern: anka-layer-editor-*
           merge-multiple: true
