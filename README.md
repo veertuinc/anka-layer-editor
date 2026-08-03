@@ -1,5 +1,7 @@
 # anka-layer-editor
 
+[![CI](https://github.com/veertuinc/anka-layer-editor/actions/workflows/ci.yml/badge.svg?branch=edge)](https://github.com/veertuinc/anka-layer-editor/actions/workflows/ci.yml)
+
 `anka-layer-editor` is a standalone terminal (TUI) tool for browsing and editing Anka
 filesystem-layer archives (`.tar.gz`) before you import/push them. It lets you:
 

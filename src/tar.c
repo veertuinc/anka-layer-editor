@@ -6,6 +6,11 @@
 #include <errno.h>
 #include <zlib.h>
 
+/* EFTYPE is BSD ("inappropriate file type or format"); Linux has no equivalent. */
+#ifndef EFTYPE
+#define EFTYPE EINVAL
+#endif
+
 #define TByte 512
 #define PAD512(n) ((TByte - ((n) % TByte)) % TByte)
 
