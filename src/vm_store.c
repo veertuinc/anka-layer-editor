@@ -21,7 +21,7 @@ typedef struct {
 } vm_store;
 
 static void update_label(vm_store *store) {
-    snprintf(store->label, sizeof(store->label), "%s (tag %s)", store->info.vm,
+    snprintf(store->label, sizeof(store->label), "%s (OCI tag %s)", store->info.vm,
              store->info.current_tag);
 }
 
@@ -35,7 +35,7 @@ static int read_stopped_vm_info(const char *vm, anka_vm_info *info, char *err,
         return -1;
     }
     if (!info->current_tag[0]) {
-        le_seterr(err, errlen, "%s has no tag to edit", vm);
+        le_seterr(err, errlen, "%s has no OCI tag to edit", vm);
         return -1;
     }
     return 0;
@@ -93,8 +93,8 @@ static int vm_store_pre_save_question(const le_store *base, char *question,
     if (store->uncommitted_change_count == 0)
         return 0;
     snprintf(question, len,
-             "The VM disk has %ld changes that are not in a tag. Put them in "
-             "the new tag too?", store->uncommitted_change_count);
+             "The VM disk has %ld changes that are not in an OCI tag. Put them "
+             "in the new OCI tag too?", store->uncommitted_change_count);
     return 1;
 }
 
@@ -102,7 +102,7 @@ static int vm_store_save_name_prompt(const le_store *base, char *prompt,
                                      size_t prompt_len, char *default_name,
                                      size_t default_len) {
     const vm_store *store = (const vm_store *)base;
-    snprintf(prompt, prompt_len, " New tag name: ");
+    snprintf(prompt, prompt_len, " New OCI tag name: ");
     snprintf(default_name, default_len, "%s-edit", store->info.current_tag);
     return 1;
 }
@@ -111,14 +111,14 @@ static int vm_store_check_save_name(const le_store *base, const char *name,
                                     char *err, size_t errlen) {
     const vm_store *store = (const vm_store *)base;
     if (!name[0]) {
-        le_seterr(err, errlen, "the tag name is empty");
+        le_seterr(err, errlen, "the OCI tag name is empty");
         return -1;
     }
     int exists;
     if (anka_cli_tag_exists(&store->info, name, &exists, err, errlen) == -1)
         return -1;
     if (exists) {
-        le_seterr(err, errlen, "tag '%s' already exists", name);
+        le_seterr(err, errlen, "OCI tag '%s' already exists", name);
         return -1;
     }
     return 0;
@@ -191,14 +191,14 @@ static int vm_store_save(le_store *base, le_model *m, int arch_idx,
                          const char *save_name, char *err, size_t errlen) {
     vm_store *store = (vm_store *)base;
     if (!save_name) {
-        le_seterr(err, errlen, "no tag name for the save");
+        le_seterr(err, errlen, "no OCI tag name for the save");
         return -1;
     }
     anka_vm_info fresh_info;
     if (read_stopped_vm_info(store->info.vm, &fresh_info, err, errlen) == -1)
         return -1;
     if (strcmp(fresh_info.current_tag, store->info.current_tag) != 0) {
-        le_seterr(err, errlen, "the current tag of %s is now '%s'; open it again",
+        le_seterr(err, errlen, "the current OCI tag of %s is now '%s'; open it again",
                   store->info.vm, fresh_info.current_tag);
         return -1;
     }
@@ -217,7 +217,7 @@ static int vm_store_save(le_store *base, le_model *m, int arch_idx,
     model_clear_slot(m, arch_idx);
     char load_err[512];
     if (load_layer(store, m, arch_idx, load_err, sizeof(load_err)) == -1) {
-        le_seterr(err, errlen, "saved tag '%s', but cannot load it: %s",
+        le_seterr(err, errlen, "saved OCI tag '%s', but cannot load it: %s",
                   save_name, load_err);
         return -1;
     }
@@ -252,8 +252,9 @@ le_store *vm_store_new(const char *vm, const char *expected_tag, char *err,
         return NULL;
     }
     if (expected_tag && strcmp(expected_tag, store->info.current_tag) != 0) {
-        le_seterr(err, errlen, "%s: the current tag is '%s', not '%s'. VM mode "
-                  "edits only the current tag", vm, store->info.current_tag,
+        le_seterr(err, errlen, "%s: the current OCI tag is '%s', not '%s'. VM "
+                  "mode edits only the current OCI tag", vm,
+                  store->info.current_tag,
                   expected_tag);
         free(store);
         return NULL;

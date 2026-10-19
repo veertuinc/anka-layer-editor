@@ -423,7 +423,7 @@ static void test_vm_store_refuses_running_vm_and_wrong_tag(const char *dir) {
 
     fake_anka_reset(dir);
     EXPECT(vm_store_new("myvm", "other", err, sizeof(err)) == NULL &&
-           strstr(err, "current tag is 'base'"), "wrong tag refused: %s", err);
+           strstr(err, "current OCI tag is 'base'"), "wrong tag refused: %s", err);
     le_store *store = vm_store_new("myvm", "base", err, sizeof(err));
     EXPECT(store != NULL, "matching tag accepted: %s", err);
     store_free(store);
@@ -460,7 +460,8 @@ static void test_vm_store_save_questions(const char *dir) {
                                       sizeof(default_name)) &&
                !strcmp(default_name, "base-edit"), "default '%s'", default_name);
         EXPECT(store_check_save_name(store, "taken", err, sizeof(err)) == -1 &&
-               strstr(err, "already exists"), "existing tag refused: %s", err);
+               strstr(err, "OCI tag 'taken' already exists"),
+               "existing tag refused: %s", err);
         EXPECT(store_check_save_name(store, "", err, sizeof(err)) == -1,
                "empty tag refused");
         EXPECT(store_check_save_name(store, "fresh", err, sizeof(err)) == 0,

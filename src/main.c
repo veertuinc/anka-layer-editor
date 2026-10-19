@@ -17,8 +17,10 @@ static void usage(const char *prog) {
             "and save. With several archives loaded (up to %d), each row shows\n"
             "which archives hold that path. Press '?' inside for keybindings.\n"
             "\n"
-            "--vm edits the top layer of the stopped VM's current tag (--tag\n"
-            "must name that tag). Save commits the edits as a new local tag.\n",
+            "--vm edits the top layer of the stopped VM's current OCI tag (--tag\n"
+            "must name that OCI tag). Save commits the edits as a new local OCI\n"
+            "tag. About OCI tags:\n"
+            "http://docs.veertu.com/anka/templates-and-registries/using-an-oci-registry/oci-tags/\n",
             prog, prog, LE_MAX_ARCHIVES);
 }
 
