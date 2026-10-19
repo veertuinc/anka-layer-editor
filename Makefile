@@ -5,7 +5,14 @@
 
 CC      ?= cc
 CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter
-LDLIBS  := -lz -lncurses
+CFLAGS  += $(EXTRA_CFLAGS)
+# macOS libncurses has wide-character support built in; Linux splits it out.
+ifeq ($(shell uname -s),Linux)
+CURSES_LIB := -lncursesw
+else
+CURSES_LIB := -lncurses
+endif
+LDLIBS  := -lz $(CURSES_LIB)
 PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
 

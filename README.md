@@ -8,7 +8,11 @@ filesystem-layer archives (`.tar.gz`) before you import/push them. It lets you:
 - Navigate the archive hierarchy, expanding and collapsing directories.
 - Mark files or whole subtrees for removal from the archive.
 - Add files from the host machine at a chosen path inside the archive.
-- Save the edited archive back in place (atomically).
+- See whiteout (`.wh.`) entries, and stage new whiteouts that delete a path from the
+  base image when Anka applies the layer.
+- Undo a staged addition or whiteout before you save.
+- Save the edited archive back in place (atomically), with the Anka change kind,
+  owners, permissions, hard links, and pax records of kept entries unchanged.
 - Open several layers at once (up to 8) and see which of them hold each path.
 
 It is a **completely separate product**. It does not link against, include, or modify
@@ -34,7 +38,9 @@ anka push mytemplate --tag mylayer http://zot-registry:15455/v2
 
 ## Build
 
-Requires a C toolchain, `zlib`, and `ncurses` (present by default on macOS).
+Requires a C toolchain, `zlib`, and `ncurses` (present by default on macOS). On
+Debian or Ubuntu, install `build-essential libncurses-dev zlib1g-dev`. On Linux the
+binary links `ncursesw`, so UTF-8 file names show correctly.
 
 ```bash
 make               # builds the binary and runs the headless round-trip tests
@@ -53,7 +59,8 @@ make install PREFIX=~/.local
 ## CI
 
 Pushes and pull requests to `edge` run GitHub Actions CI on `macos-latest` and
-`ubuntu-24.04-arm` (`make`: build + headless tests).
+`ubuntu-24.04-arm` (`make EXTRA_CFLAGS=-Werror`: build + headless tests). A new
+compiler warning fails the build.
 
 ## Release
 
@@ -75,16 +82,65 @@ anka-layer-editor <archive1.tar.gz> [archive2.tar.gz archive3.tar.gz ...]
 | Key | Action |
 |-----|--------|
 | Up / Down, `j` / `k` | Move selection |
-| Right / `l` | Expand directory |
+| Right / `l` | Expand directory (or step into it) |
 | Left / `h` | Collapse directory (or jump to parent) |
-| `Space` | Toggle mark-for-removal on the selected file/subtree |
-| `a` | Add a host file: prompts for host path, then destination path in the archive |
-| `/` | Filter by substring (auto-reveals matching branches; `Esc`/empty clears) |
+| PgUp / PgDn | Page up / down |
+| `g` / `G` | Jump to top / bottom |
+| `Space` | Toggle mark-for-removal on the selected file or subtree. On a staged item, undo it |
+| `a` | Add a host file: prompts for the host path, the destination in the archive, and the owner |
+| `w` | Stage a whiteout: prompts for the path to delete from the base image |
+| `/` | Filter by substring (shows matching branches; an empty filter clears it) |
 | `s` | Save every changed archive in place |
 | `q` | Quit (asks to confirm if there are unsaved changes) |
 | `?` | Toggle the help overlay |
 
-Marked-for-removal rows are dimmed; staged additions are prefixed with `[+]`.
+In prompts, `Enter` accepts, `Esc` cancels, and `Tab` completes host paths. Prompts
+start with a useful value: the selected directory for destinations and whiteouts,
+the current filter, and the owner of the nearest entry above the destination.
+
+Row markers:
+
+- `X` is marked for removal, `~` is removed because a parent is marked.
+- `[+]` is staged and not saved yet.
+- `[wh]` (red) is a whiteout, with the name it deletes.
+- `a -> b` is a symlink, `a => b` is a hard link.
+
+The line above the status bar shows the selected path in full, its state in each
+archive (member, staged, marked, and the Anka change kind: added, modified, or
+whiteout), its mode, and its owner.
+
+## Whiteouts
+
+A layer entry whose name starts with `.wh.` tells Anka to delete the rest of the name
+from the base image. For example, `usr/local/bin/.wh.tool` deletes
+`usr/local/bin/tool`. The editor shows these entries as `[wh] tool` with a note:
+
+```
+      v bin/
+          [wh] oldtool   (deletes it from the base image)
+          [+] [wh] tool   (deletes it from the base image)
+X         tool   (10B)
+```
+
+- Press `w` and type the path to delete. End the path with `/` to delete a directory.
+  Anka removes a directory only when it is empty in the base image.
+- If the layer also holds the path you delete, the editor marks that copy for removal,
+  because a layer must not add and delete the same path. If the path was a staged
+  addition, the addition is undone.
+- Press `Space` on a staged whiteout to undo it. A mark that the whiteout set is
+  cleared too.
+- The editor writes a new whiteout as an empty entry with change kind 4 (whiteout),
+  the same as `anka export --layer`.
+- The opaque marker `.wh..wh..opq` shows as a whiteout row with a note. Anka does not
+  use it.
+
+Limits:
+
+- If a whiteout undoes a staged addition, undoing the whiteout does not stage the
+  addition again. Use `a` to add the host file again.
+- The editor records that a whiteout marked its target. If you unmark the target and
+  mark it again while the whiteout is staged, undoing the whiteout still clears that
+  mark. Press `Space` on the target to mark it again.
 
 ## Comparing several layers
 
@@ -129,16 +185,27 @@ The header lists the loaded archives by number, with `*` marking unsaved changes
   several archives becomes one node that records which archives hold it.
 - Removal and staged additions are per-archive flags on tree nodes; a node is excluded
   from an archive on save if it or any of its ancestors is marked for that archive.
-- Additions reference the host file by path and are read at save time.
+- Additions reference the host file by path and are read at save time. A new file gets
+  its type from the host and its owner from the prompt. Anka imports an entry only
+  when its change kind (the tar `devmajor` field) is allowed. Thus an addition that
+  replaces a layer entry keeps the change kind of that entry. A new path stays
+  untagged, so Anka always imports it.
 - On save, the original archive is streamed entry-by-entry into a temporary file (kept
   entries copied, removed entries skipped), staged additions are appended, and the temp
-  file is atomically renamed over the original. The original is left untouched unless the
+  file is atomically renamed over the original. The temp file gets the mode of the original,
+  and its owner when the user has permission. The original is left untouched unless the
   new archive is written successfully. Each archive is written independently, so an
   archive you did not change is never rewritten.
+- Kept entries keep their change kind, owner names, hard links, device numbers, and pax
+  records (for example `SCHILY.xattr.*` and sub-second times). If the editor cannot
+  rewrite an entry, for example an unknown entry type with data, the save fails and
+  the original archive does not change.
 
 ## Design notes
 
 - Written in C using only system `zlib` (gzip) and `ncurses` (TUI).
 - The tar reader/writer emits POSIX ustar headers with pax extension records for long
-  paths / large sizes, matching what Anka's importer accepts.
+  paths / large sizes, matching what Anka's importer accepts. The reader also accepts
+  global pax headers, GNU long names, and GNU base-256 sizes, and it checks each
+  header checksum.
 - No persisted edit state: closing without saving discards changes.

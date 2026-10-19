@@ -26,4 +26,4 @@ jobs:
           sudo apt-get install -y libncurses-dev zlib1g-dev
 
       - name: Build and test
-        run: make
+        run: make EXTRA_CFLAGS=-Werror
