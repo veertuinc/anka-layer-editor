@@ -5,6 +5,7 @@
 #include <ncurses.h>
 #include <glob.h>
 #include <locale.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,12 +37,38 @@ typedef struct {
 
 #define KEY_ESCAPE 27
 #define KEY_CTRL(c) ((c) & 0x1f)
+/* read_key returns this when SIGINT or SIGTERM asked the editor to leave.
+ * 75 is the process status for SIGTERM, which `make dev` uses to restart. */
+#define KEY_STOP (-2)
+#define RELOAD_EXIT 75
 
-/* Color pairs: paths in more than one archive (and their parents), and
- * whiteout entries. */
+/* 1 = leave (SIGINT), 2 = leave and ask `make dev` to restart (SIGTERM). */
+static volatile sig_atomic_t stop_requested;
+
+static void request_stop(int sig) {
+    stop_requested = (sig == SIGTERM) ? 2 : 1;
+}
+
+/* getch waits, so a reload signal would not be seen until the next key.
+ * A short timeout lets the loop notice the signal and call endwin. */
+static int read_key(void) {
+    for (;;) {
+        if (stop_requested)
+            return KEY_STOP;
+        int ch = getch();
+        if (ch != ERR)
+            return ch;
+    }
+}
+
+/* Color pairs: paths in more than one archive (and their parents), whiteout
+ * entries, and the selected row. The selected row is not reverse video, so it
+ * does not match the header and footer bars. */
 #define PAIR_SHARED   1
 #define PAIR_WHITEOUT 2
+#define PAIR_SELECTED 3
 static int have_colors;
+static int have_select_color;
 
 #define HELP_MAX_LINES 4
 #define HELP_LINE_CAP  256
@@ -419,18 +446,19 @@ static void draw_row(tui_state *st, int screen_y, size_t idx) {
         append_entry_text(line, sizeof(line), off, n, meta);
 
     int attr = 0;
-    if (selected)
+    if (selected && have_select_color)
+        attr = COLOR_PAIR(PAIR_SELECTED);
+    else if (selected)
         attr = A_REVERSE;
     else if (rs.removed_everywhere)
         attr = A_DIM;
-
-    if (!rs.removed_everywhere) {
+    else {
         int color_pair = whiteout ? PAIR_WHITEOUT
                          : n->shared_warn ? PAIR_SHARED : 0;
         if (color_pair && have_colors)
-            attr |= COLOR_PAIR(color_pair);
-        else if (color_pair && !selected)
-            attr |= A_BOLD;         /* no color: keep these rows obvious */
+            attr = COLOR_PAIR(color_pair);
+        else if (color_pair)
+            attr = A_BOLD;          /* no color: keep these rows obvious */
     }
 
     if (attr)
@@ -647,7 +675,11 @@ static int prompt_edit(const char *label, char *buf, size_t len,
         move(y, label_cols + (int)(pos - start));
         refresh();
 
-        int ch = getch();
+        int ch = read_key();
+        if (ch == KEY_STOP) {
+            accepted = 0;
+            break;
+        }
         switch (ch) {
         case KEY_ESCAPE:
             accepted = 0;
@@ -712,7 +744,7 @@ static int prompt_edit(const char *label, char *buf, size_t len,
 
 static int confirm(const char *question) {
     draw_bar(LINES - 1, question);
-    int ch = getch();
+    int ch = read_key();
     return ch == 'y' || ch == 'Y';
 }
 
@@ -733,7 +765,9 @@ static int prompt_archive(tui_state *st, const char *action, const int *slots,
     str_append(line, sizeof(line), off, "(Esc cancels)");
     draw_bar(LINES - 1, line);
 
-    int ch = getch();
+    int ch = read_key();
+    if (ch == KEY_STOP)
+        return PICK_CANCEL;
     if (allow_all && (ch == 'a' || ch == 'A'))
         return PICK_ALL;
     if (ch >= '1' && ch <= '9') {
@@ -1100,6 +1134,13 @@ static int init_screen(void) {
     noecho();
     keypad(stdscr, TRUE);
     curs_set(0);
+    timeout(200);                       /* read_key notices SIGTERM without a key */
+
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = request_stop;
+    sigaction(SIGINT, &action, NULL);
+    sigaction(SIGTERM, &action, NULL);
 
     have_colors = 0;
     if (has_colors() && start_color() != ERR) {
@@ -1108,6 +1149,9 @@ static int init_screen(void) {
         use_default_colors();
         have_colors = init_pair(PAIR_SHARED, COLOR_YELLOW, -1) != ERR &&
                       init_pair(PAIR_WHITEOUT, COLOR_RED, -1) != ERR;
+        /* Black on cyan stays readable on a light terminal and on a dark one,
+         * and it is not the grey of a reverse-video bar. */
+        have_select_color = init_pair(PAIR_SELECTED, COLOR_BLACK, COLOR_CYAN) != ERR;
     }
     return 0;
 }
@@ -1126,7 +1170,9 @@ int tui_run(const le_session *sess, le_model *m) {
     while (running) {
         clamp_scroll(&st);
         draw(&st);
-        int ch = getch();
+        int ch = read_key();
+        if (ch == KEY_STOP)
+            break;
 
         if (st.show_help) {             /* any key dismisses help */
             st.show_help = 0;
@@ -1209,5 +1255,5 @@ int tui_run(const le_session *sess, le_model *m) {
 
     endwin();
     free(st.rows);
-    return 0;
+    return stop_requested == 2 ? RELOAD_EXIT : 0;
 }

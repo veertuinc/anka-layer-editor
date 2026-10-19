@@ -23,6 +23,24 @@ It is a **completely separate product**. It does not link against, include, or m
 any Anka code. In archive mode it only reads and writes a standard gzip tar, and you
 run the Anka steps yourself. VM mode runs the `anka` command for you.
 
+The file tree of two layers. Yellow rows are paths that both layers hold.
+
+![File tree of two layers](screenshots/tree.png)
+
+A file marked for removal. `X` is the mark.
+
+![A marked file](screenshots/marked.png)
+
+The help overlay.
+
+![Help overlay](screenshots/help.png)
+
+VM mode on a stopped VM. The header shows the current OCI tag.
+
+![VM mode](screenshots/vm.png)
+
+Regenerate the pictures with `make screenshots` (needs `tmux`, `python3`, and Pillow). The letters are Menlo Bold on macOS, or DejaVu Sans Mono Bold on Linux. VM mode in that command uses the fake `anka` from the tests, so you do not need a VM. Commit the PNG files under `screenshots/`.
+
 ## Where it fits in the Anka workflow
 
 ```bash
@@ -62,6 +80,8 @@ sudo make install            # installs to /usr/local/bin
 # or
 make install PREFIX=~/.local
 ```
+
+`make dev` builds the editor, opens the two sample layers, and restarts it when you change a file under `src/`. Quit with `q` or Ctrl-C. Pass other arguments with `make dev DEV_ARGS='layer.tar.gz'`.
 
 ## CI
 

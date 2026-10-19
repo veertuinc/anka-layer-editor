@@ -25,7 +25,10 @@ LIB_OBJ := $(filter-out src/main.o src/tui.o,$(OBJ))
 TEST_SUPPORT := tests/test_support.c tests/test_support.h
 TEST_BIN := tests/roundtrip_test tests/vm_mode_test
 
-.PHONY: all build clean install test phase-build
+.PHONY: all build clean install test phase-build screenshots dev
+
+# Sample layers for `make dev` when DEV_ARGS is not set.
+DEV_ARGS ?= testdata/pkg-cmake.tar.gz testdata/pkg-jq.tar.gz
 
 # Plain `make` builds the binary and runs the test suite.
 all: build test
@@ -59,6 +62,16 @@ tests/%_test: tests/%_test.c $(TEST_SUPPORT) $(LIB_OBJ) $(HDR)
 test: $(TEST_BIN)
 	@echo "==> Running tests"
 	@for t in $(TEST_BIN); do ./$$t || exit 1; done
+
+# README pictures. Not part of `make`: it needs tmux, and you commit the PNGs.
+screenshots: build
+	@echo "==> Writing screenshots"
+	./scripts/screenshots.sh
+
+# Rebuild and restart the editor when a file under src/ changes.
+# make dev DEV_ARGS='--vm myvm'   or   make dev DEV_ARGS='layer.tar.gz'
+dev:
+	./scripts/dev.sh $(DEV_ARGS)
 
 clean:
 	@echo "==> Cleaning"
