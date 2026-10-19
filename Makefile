@@ -1,4 +1,4 @@
-# anka-layer-editor
+# anka-oci-tag-editor
 #
 # Standalone TUI for editing filesystem-layer tar.gz archives.
 # Self-contained: depends only on system zlib and ncurses. No anka code.
@@ -16,7 +16,7 @@ LDLIBS  := -lz $(CURSES_LIB)
 PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
 
-BIN     := anka-layer-editor
+BIN     := anka-oci-tag-editor
 SRC     := $(wildcard src/*.c)
 OBJ     := $(SRC:.c=.o)
 HDR     := $(wildcard src/*.h)

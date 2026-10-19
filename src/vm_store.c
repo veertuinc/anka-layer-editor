@@ -129,7 +129,7 @@ static int write_change_tar(const le_model *m, int arch_idx, char *err,
                             size_t errlen) {
     const char *tmpdir = getenv("TMPDIR");
     char path[1024];
-    snprintf(path, sizeof(path), "%s/anka-layer-editor-XXXXXX",
+    snprintf(path, sizeof(path), "%s/anka-oci-tag-editor-XXXXXX",
              tmpdir && tmpdir[0] ? tmpdir : "/tmp");
     int fd = mkstemp(path);
     if (fd == -1) {

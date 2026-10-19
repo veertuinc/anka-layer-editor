@@ -501,7 +501,7 @@ static void format_details(const tui_state *st, char *buf, size_t cap) {
 
 static void draw_help(const tui_state *st) {
     const char *lines[] = {
-        "  anka-layer-editor - help",
+        "  anka-oci-tag-editor - help",
         "",
         "  Up/Down, j/k    Move selection",
         "  Right / l       Expand directory (or step into)",
@@ -555,7 +555,7 @@ static void draw(tui_state *st) {
 
     /* Header: the archive (or archives) being edited, '*' when unsaved. */
     char title[1024];
-    int off = str_append(title, sizeof(title), 0, " anka-layer-editor - ");
+    int off = str_append(title, sizeof(title), 0, " anka-oci-tag-editor - ");
     if (multi(st)) {
         for (int i = 0; i < st->sess->count; i++) {
             off = str_append(title, sizeof(title), off, "%d:", i + 1);

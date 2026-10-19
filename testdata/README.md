@@ -22,14 +22,14 @@ Regenerate:
 **No yellow** (directory scaffolding overlaps; no conflicting files):
 
 ```bash
-./anka-layer-editor testdata/pkg-cmake.tar.gz testdata/pkg-wireguard.tar.gz
+./anka-oci-tag-editor testdata/pkg-cmake.tar.gz testdata/pkg-wireguard.tar.gz
 ```
 
 **Yellow + `!`** on shared files and the parents that lead to them
 (`usr/`, `usr/local/`, `usr/local/etc/`, …):
 
 ```bash
-./anka-layer-editor testdata/pkg-cmake.tar.gz testdata/pkg-jq.tar.gz
+./anka-oci-tag-editor testdata/pkg-cmake.tar.gz testdata/pkg-jq.tar.gz
 ```
 
 Shared paths:
@@ -40,5 +40,5 @@ Shared paths:
 **Three layers** (cmake/jq conflict; wireguard stays unique):
 
 ```bash
-./anka-layer-editor testdata/pkg-cmake.tar.gz testdata/pkg-wireguard.tar.gz testdata/pkg-jq.tar.gz
+./anka-oci-tag-editor testdata/pkg-cmake.tar.gz testdata/pkg-wireguard.tar.gz testdata/pkg-jq.tar.gz
 ```

@@ -76,14 +76,14 @@ jobs:
       - name: Name binary
         run: |
           set -euo pipefail
-          mv anka-layer-editor "anka-layer-editor-${{ matrix.target }}"
-          ls -la "anka-layer-editor-${{ matrix.target }}"
+          mv anka-oci-tag-editor "anka-oci-tag-editor-${{ matrix.target }}"
+          ls -la "anka-oci-tag-editor-${{ matrix.target }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: anka-layer-editor-${{ matrix.target }}
-          path: anka-layer-editor-${{ matrix.target }}
+          name: anka-oci-tag-editor-${{ matrix.target }}
+          path: anka-oci-tag-editor-${{ matrix.target }}
           retention-days: 1
           if-no-files-found: error
 
@@ -100,7 +100,7 @@ jobs:
       - name: Download binaries
         uses: actions/download-artifact@v6
         with:
-          pattern: anka-layer-editor-*
+          pattern: anka-oci-tag-editor-*
           merge-multiple: true
           path: dist
 
@@ -113,14 +113,14 @@ jobs:
           TAG: ${{ needs.validate.outputs.tag }}
         run: |
           set -euo pipefail
-          test -f dist/anka-layer-editor-darwin-arm64
-          test -f dist/anka-layer-editor-linux-arm64
+          test -f dist/anka-oci-tag-editor-darwin-arm64
+          test -f dist/anka-oci-tag-editor-linux-arm64
           git config user.name "github-service-user-veertu"
           git config user.email "service.user@veertu.com"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
           gh release create "$TAG" \
-            dist/anka-layer-editor-darwin-arm64 \
-            dist/anka-layer-editor-linux-arm64 \
+            dist/anka-oci-tag-editor-darwin-arm64 \
+            dist/anka-oci-tag-editor-linux-arm64 \
             --title "$TAG" \
             --notes "Release $TAG"

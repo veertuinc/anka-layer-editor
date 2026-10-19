@@ -1,5 +1,5 @@
 # Build artifacts
-/anka-layer-editor
+/anka-oci-tag-editor
 src/*.o
 *.o
 *.dSYM/

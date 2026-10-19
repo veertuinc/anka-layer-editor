@@ -108,11 +108,11 @@ cat <<'EOF'
 
 Scenarios:
   # dirs overlap in the tree, no shared files -> no yellow
-  ./anka-layer-editor testdata/pkg-cmake.tar.gz testdata/pkg-wireguard.tar.gz
+  ./anka-oci-tag-editor testdata/pkg-cmake.tar.gz testdata/pkg-wireguard.tar.gz
 
   # shared files README.md + etc/.../common -> yellow on those + parents
-  ./anka-layer-editor testdata/pkg-cmake.tar.gz testdata/pkg-jq.tar.gz
+  ./anka-oci-tag-editor testdata/pkg-cmake.tar.gz testdata/pkg-jq.tar.gz
 
   # three layers (cmake/jq share files; wireguard unique)
-  ./anka-layer-editor testdata/pkg-cmake.tar.gz testdata/pkg-wireguard.tar.gz testdata/pkg-jq.tar.gz
+  ./anka-oci-tag-editor testdata/pkg-cmake.tar.gz testdata/pkg-wireguard.tar.gz testdata/pkg-jq.tar.gz
 EOF

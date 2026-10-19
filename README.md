@@ -1,8 +1,8 @@
-# anka-layer-editor
+# anka-oci-tag-editor
 
-[![CI](https://github.com/veertuinc/anka-layer-editor/actions/workflows/ci.yml/badge.svg?branch=edge)](https://github.com/veertuinc/anka-layer-editor/actions/workflows/ci.yml)
+[![CI](https://github.com/veertuinc/anka-oci-tag-editor/actions/workflows/ci.yml/badge.svg?branch=edge)](https://github.com/veertuinc/anka-oci-tag-editor/actions/workflows/ci.yml)
 
-`anka-layer-editor` is a standalone terminal (TUI) tool for browsing and editing Anka
+`anka-oci-tag-editor` is a standalone terminal (TUI) tool for browsing and editing Anka
 filesystem-layer archives (`.tar.gz`) before you import/push them. It lets you:
 
 - Navigate the archive hierarchy, expanding and collapsing directories.
@@ -30,7 +30,7 @@ run the Anka steps yourself. VM mode runs the `anka` command for you.
 anka export --layer mytemplate /path/to/layer.tar.gz
 
 # 2. Curate the layer interactively (this tool; pass several layers to compare them)
-anka-layer-editor /path/to/layer.tar.gz
+anka-oci-tag-editor /path/to/layer.tar.gz
 
 # 3. Restore the template and re-apply the edited layer (Anka)
 anka pull --local mytemplate --tag vanilla --shrink
@@ -55,7 +55,7 @@ make test          # tests only
 The VM mode tests run fake `anka` and `anka_image` bash scripts from
 [`tests/fake-anka/`](tests/fake-anka/). They do not need Anka.
 
-This produces the `anka-layer-editor` binary. To install:
+This produces the `anka-oci-tag-editor` binary. To install:
 
 ```bash
 sudo make install            # installs to /usr/local/bin
@@ -76,13 +76,13 @@ Cut a release from the Actions tab: run the **Release** workflow and set
 
 1. Builds and tests on macOS and Linux
 2. Creates tag `vX.Y.Z` and a GitHub Release
-3. Attaches `anka-layer-editor-darwin-arm64` and `anka-layer-editor-linux-arm64`
+3. Attaches `anka-oci-tag-editor-darwin-arm64` and `anka-oci-tag-editor-linux-arm64`
 
 ## Usage
 
 ```bash
-anka-layer-editor <archive1.tar.gz> [archive2.tar.gz archive3.tar.gz ...]
-anka-layer-editor --vm <name> [--tag <tag>]
+anka-oci-tag-editor <archive1.tar.gz> [archive2.tar.gz archive3.tar.gz ...]
+anka-oci-tag-editor --vm <name> [--tag <tag>]
 ```
 
 ### Keys
@@ -155,7 +155,7 @@ Limits:
 Pass more than one archive to browse them together:
 
 ```bash
-anka-layer-editor layer-a.tar.gz layer-b.tar.gz
+anka-oci-tag-editor layer-a.tar.gz layer-b.tar.gz
 ```
 
 Tiny Homebrew-style fixtures for trying this live are in [`testdata/`](testdata/)
@@ -189,7 +189,7 @@ The header lists the loaded archives by number, with `*` marking unsaved changes
 ## VM mode
 
 ```bash
-anka-layer-editor --vm <name> [--tag <tag>]
+anka-oci-tag-editor --vm <name> [--tag <tag>]
 ```
 
 VM mode opens the top layer of a stopped VM's current

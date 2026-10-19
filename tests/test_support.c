@@ -18,7 +18,7 @@
 int test_failures = 0;
 
 char *make_tmpdir(void) {
-    char *tmpl = strdup("/tmp/anka-layer-editor-test.XXXXXX");
+    char *tmpl = strdup("/tmp/anka-oci-tag-editor-test.XXXXXX");
     if (!tmpl || !mkdtemp(tmpl)) {
         free(tmpl);
         return NULL;
