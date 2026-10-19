@@ -14,10 +14,12 @@ filesystem-layer archives (`.tar.gz`) before you import/push them. It lets you:
 - Save the edited archive back in place (atomically), with the Anka change kind,
   owners, permissions, hard links, and pax records of kept entries unchanged.
 - Open several layers at once (up to 8) and see which of them hold each path.
+- Edit the top layer of a stopped VM's current tag with no exported tar, and save the
+  edits as a new local tag ([VM mode](#vm-mode)).
 
 It is a **completely separate product**. It does not link against, include, or modify
-any Anka code. It only reads and writes a standard gzip tar, so Anka is involved solely
-at the edges (you run those steps yourself).
+any Anka code. In archive mode it only reads and writes a standard gzip tar, and you
+run the Anka steps yourself. VM mode runs the `anka` command for you.
 
 ## Where it fits in the Anka workflow
 
@@ -48,6 +50,9 @@ make build         # binary only
 make test          # tests only
 ```
 
+The VM mode tests run fake `anka` and `anka_image` bash scripts from
+[`tests/fake-anka/`](tests/fake-anka/). They do not need Anka.
+
 This produces the `anka-layer-editor` binary. To install:
 
 ```bash
@@ -75,6 +80,7 @@ Cut a release from the Actions tab: run the **Release** workflow and set
 
 ```bash
 anka-layer-editor <archive1.tar.gz> [archive2.tar.gz archive3.tar.gz ...]
+anka-layer-editor --vm <name> [--tag <tag>]
 ```
 
 ### Keys
@@ -177,6 +183,62 @@ Edits stay scoped to an archive:
   fails, saving stops there and the archives already written stay saved.
 
 The header lists the loaded archives by number, with `*` marking unsaved changes.
+
+## VM mode
+
+```bash
+anka-layer-editor --vm <name> [--tag <tag>]
+```
+
+VM mode opens the top layer of a stopped VM's current tag. You do not export a tar
+first. When you save, the editor applies your edits to the VM's working disk and
+commits them as a new local tag on top of the current tag.
+
+What the editor does:
+
+1. At open, it reads the layer from `ANKA_PUSH_MODE=2 anka export -t <tag> <vm>`
+   through a pipe. It reads only the tar headers, so a large layer does not go to
+   disk. Then it counts the changes on the working disk that are not in a tag, with
+   `anka_image diff -ln`.
+2. `Space`, `a`, and `w` work as in archive mode, with one rule for `Space` (below).
+3. `s` asks about the uncommitted disk changes, if there are some. Then it asks for
+   the new tag name. The default is `<tag>-edit`. A tag name that exists is refused
+   before the disk changes.
+4. It writes a small change tar: a whiteout for each marked path, deepest paths
+   first, then the staged items. It sends the tar to `anka import -v <vm>` and runs
+   `anka push -l -t <new tag> <vm>`. Then it loads the new tag, which holds only your
+   edits.
+
+Ctrl-C has no effect while the import and the commit run.
+
+Rules:
+
+- The VM must be stopped. If you give `--tag`, it must be the VM's current tag.
+- `Space` works only on paths that the layer added: entries with change kind 1, and
+  directory entries. Anka's diff writes a directory only when the base image does not
+  have it. A changed file (kind 2) or a whiteout has a base version under it. A
+  whiteout cannot bring that version back, so the editor shows "This entry has a base
+  version; use w to delete it from the image".
+- If the working disk has changes that are not in a tag and you answer yes, they go
+  into the new tag too. If you answer no, the save stops.
+
+If the import fails, the working disk can be partly changed, and your edits stay in
+the editor. If the commit fails after a good import, your changes are on the working
+disk, and the message gives the `anka push -l -t` command that commits them.
+
+Limits:
+
+- Each save makes a new tag on top of the current tag. Anka cannot replace the layer
+  of an existing tag, and `anka push -l` refuses a tag name that exists.
+- A whiteout hides a file from the image. It does not free space: a file that the old
+  tag added stays inside that tag's layer.
+- One VM at a time. You cannot open a VM and archives together.
+- The editor needs `anka` on `PATH`. It uses only the public `anka` CLI, except the
+  dirty check, which runs the `anka_image` tool that `anka config` names.
+
+A test with Anka 3.10 on a clone of a macOS 27.0.1 VM: the editor opened a 7-path
+layer in about 4 seconds. A save with two removals and one new file took 16 seconds,
+and the new tag's layer held only those changes.
 
 ## How it works
 

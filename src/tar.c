@@ -405,6 +405,18 @@ tar_t *tar_ropen(const char *path) {
     return t;
 }
 
+tar_t *tar_rdopen(int fd) {
+    tar_t *t = tar_new(0);
+    if (!t)
+        return NULL;
+    t->gz = gzdopen(fd, "rb");
+    if (!t->gz) {
+        free(t);
+        return NULL;
+    }
+    return t;
+}
+
 /* Read an extension payload into t->ext_data and consume its padding. */
 static int read_ext_data(tar_t *t, off_t size) {
     if (size < 0 || size > EXT_DATA_MAX) {

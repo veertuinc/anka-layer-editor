@@ -47,8 +47,11 @@ typedef struct {
 
 typedef struct tar tar_t;
 
-/* Reading. */
+/* Reading. Plain (uncompressed) tar is read too. */
 tar_t  *tar_ropen(const char *path);
+/* Like tar_ropen on an open descriptor, which may be a pipe. On success the
+ * reader owns fd. */
+tar_t  *tar_rdopen(int fd);
 /* Returns 1 when an entry is read, 0 at end of archive, -1 on error. */
 int     tar_read_next(tar_t *t, tar_entry *e);
 /* Reads up to len bytes of the current entry's data; 0 at entry end, -1 error. */

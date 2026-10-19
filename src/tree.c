@@ -455,6 +455,20 @@ static void prune_unused(le_model *m, le_node *n) {
     }
 }
 
+/* Free every child subtree that no archive holds any more. */
+static void drop_unused_children(le_model *m, le_node *n) {
+    for (size_t i = n->nchildren; i-- > 0;) {
+        le_node *c = n->children[i];
+        if (subtree_in_use(c, m->narchives)) {
+            drop_unused_children(m, c);
+            continue;
+        }
+        size_t removed = 1 + count_members(c);
+        m->total = m->total > removed ? m->total - removed : 0;
+        child_remove_at(n, i);
+    }
+}
+
 static void set_removed(le_model *m, le_node *n, int arch_idx, int removed) {
     if (!!n->arch[arch_idx].removed == !!removed)
         return;
@@ -564,6 +578,26 @@ le_node *model_stage_host_file(le_model *m, const char *dest, int arch_idx,
                     err, errlen);
 }
 
+int model_whiteout_path(const char *target_path, char *whiteout_path,
+                        size_t len, char *err, size_t errlen) {
+    char parent[PATH_MAX], base[PATH_MAX];
+    if (split_path(target_path, parent, sizeof(parent), base, sizeof(base)) == -1) {
+        le_seterr(err, errlen, "'%s': invalid path", target_path);
+        return -1;
+    }
+    if (has_whiteout_prefix(base)) {
+        le_seterr(err, errlen, "'%s' is already a whiteout", base);
+        return -1;
+    }
+    int wrote = snprintf(whiteout_path, len, "%s%s%s%s", parent,
+                         parent[0] ? "/" : "", LE_WHITEOUT_PREFIX, base);
+    if (wrote < 0 || (size_t)wrote >= len) {
+        le_seterr(err, errlen, "path is too long");
+        return -1;
+    }
+    return 0;
+}
+
 le_node *model_stage_whiteout(le_model *m, const char *target_path,
                               int arch_idx, int target_is_dir,
                               char *err, size_t errlen) {
@@ -573,29 +607,20 @@ le_node *model_stage_whiteout(le_model *m, const char *target_path,
     }
     if (model_check_guest_path(target_path, err, errlen) == -1)
         return NULL;
-    char parent[PATH_MAX], base[PATH_MAX], whiteout_path[PATH_MAX];
-    if (split_path(target_path, parent, sizeof(parent), base, sizeof(base)) == -1) {
-        le_seterr(err, errlen, "'%s': invalid path", target_path);
+    char whiteout_path[PATH_MAX];
+    if (model_whiteout_path(target_path, whiteout_path, sizeof(whiteout_path),
+                            err, errlen) == -1)
         return NULL;
-    }
-    if (has_whiteout_prefix(base)) {
-        le_seterr(err, errlen, "'%s' is already a whiteout", base);
-        return NULL;
-    }
-    int wrote = snprintf(whiteout_path, sizeof(whiteout_path), "%s%s%s%s",
-                         parent, parent[0] ? "/" : "", LE_WHITEOUT_PREFIX, base);
-    if (wrote < 0 || (size_t)wrote >= sizeof(whiteout_path)) {
-        le_seterr(err, errlen, "path is too long");
-        return NULL;
-    }
 
     le_node *existing = model_lookup(m, whiteout_path);
     if (existing && existing->arch[arch_idx].staged) {
-        le_seterr(err, errlen, "a whiteout for '%s' is already staged", base);
+        le_seterr(err, errlen, "a whiteout for '%s' is already staged",
+                  target_path);
         return NULL;
     }
     if (existing && existing->arch[arch_idx].present) {
-        le_seterr(err, errlen, "this archive already has a whiteout for '%s'", base);
+        le_seterr(err, errlen, "this archive already has a whiteout for '%s'",
+                  target_path);
         return NULL;
     }
     if (check_stage_target(m, whiteout_path, arch_idx, err, errlen) == -1)
@@ -708,6 +733,18 @@ static void clear_arch_subtree(le_node *n, int arch_idx) {
     n->arch[arch_idx].staged = NULL;
     for (size_t i = 0; i < n->nchildren; i++)
         clear_arch_subtree(n->children[i], arch_idx);
+}
+
+void model_clear_slot(le_model *m, int arch_idx) {
+    if (!valid_arch(m, arch_idx))
+        return;
+    clear_arch_subtree(m->root, arch_idx);
+    drop_unused_children(m, m->root);
+    m->marked -= m->arch_marked[arch_idx];
+    m->added -= m->arch_added[arch_idx];
+    m->arch_marked[arch_idx] = 0;
+    m->arch_added[arch_idx] = 0;
+    touch(m);
 }
 
 /* The staged entry is now a member of that archive. */

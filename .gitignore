@@ -3,7 +3,7 @@
 src/*.o
 *.o
 *.dSYM/
-tests/roundtrip_test
+tests/*_test
 
 # Fixture build scratch
 testdata/.stage/

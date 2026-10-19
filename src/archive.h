@@ -1,5 +1,6 @@
 #pragma once
 
+#include "tar.h"
 #include "tree.h"
 
 /*
@@ -13,6 +14,11 @@
  * error (err, if non-NULL, receives a human-readable message). */
 int archive_load(const char *path, le_model *m, int arch_idx,
                  char *err, size_t errlen);
+
+/* Load every entry of an open reader into slot arch_idx; source_label names
+ * the source in messages. The caller closes the reader. 0 / -1. */
+int archive_load_tar(tar_t *in, const char *source_label, le_model *m,
+                     int arch_idx, char *err, size_t errlen);
 
 /* Save slot arch_idx of the edited model to path (atomic replace that keeps
  * the archive's mode and owner). 0 / -1. */

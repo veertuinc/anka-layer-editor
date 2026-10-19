@@ -1,0 +1,95 @@
+#!/bin/bash
+# Fake anka for tests. One VM; its state is in files under $FAKE_ANKA_DIR:
+#   status       VM status (default "stopped")
+#   current_tag  current tag (default "base")
+#   tags         the local tags, one per line (default: the current tag)
+#   calls.log    each call is added as one line
+# export writes $FAKE_ANKA_LAYER. import saves stdin to import.tar.
+# FAKE_ANKA_FAIL=<show|disk|tag|config|export|import|push> makes that call fail.
+set -u
+state_dir=${FAKE_ANKA_DIR:?}
+json_output=0
+if [ "${1:-}" = "-j" ]; then
+    json_output=1
+    shift
+fi
+echo "$*" >>"$state_dir/calls.log"
+
+current_tag=$(cat "$state_dir/current_tag" 2>/dev/null || echo base)
+vm_status=$(cat "$state_dir/status" 2>/dev/null || echo stopped)
+
+fail_when_asked() {
+    [ "${FAKE_ANKA_FAIL:-}" = "$1" ] || return 0
+    if [ "$json_output" = 1 ]; then
+        printf '{"status":"ERROR","code":3,"body":{},"message":"fake %s failure"}' "$1"
+    else
+        echo "fake $1 failure" >&2
+    fi
+    exit 3
+}
+
+reply_ok() {
+    printf '{"status": "OK", "body": %s}' "$1"
+}
+
+list_tags() {
+    cat "$state_dir/tags" 2>/dev/null || echo "$current_tag"
+}
+
+case "$1" in
+show)
+    vm=$2
+    case "${3:-}" in
+    "")
+        fail_when_asked show
+        reply_ok "{\"uuid\": \"fake-uuid-$vm\", \"name\": \"$vm\", \"version\": \"$current_tag\", \"addons_version\": \"9\", \"status\": \"$vm_status\"}"
+        ;;
+    disk)
+        fail_when_asked disk
+        reply_ok '{"file": "working.img", "base": "tag.ank"}'
+        ;;
+    tag)
+        fail_when_asked tag
+        tag_list=""
+        while read -r tag; do
+            tag_list="$tag_list${tag_list:+, }{\"name\": \"$vm\", \"tag\": \"$tag\"}"
+        done < <(list_tags)
+        reply_ok "[$tag_list]"
+        ;;
+    esac
+    ;;
+config)
+    fail_when_asked config
+    reply_ok "{\"img_lib_dir\": \"$state_dir\", \"anka_image_maker_executable\": \"$(cd "$(dirname "$0")" && pwd)/anka_image\"}"
+    ;;
+export)
+    fail_when_asked export
+    if [ "${ANKA_PUSH_MODE:-}" != 2 ]; then
+        echo "ANKA_PUSH_MODE is not 2" >&2
+        exit 1
+    fi
+    cat "${FAKE_ANKA_LAYER:?}"
+    ;;
+import)
+    fail_when_asked import
+    cat >"$state_dir/import.tar"
+    reply_ok '{}'
+    ;;
+push)
+    fail_when_asked push
+    new_tag=$4
+    if list_tags | grep -qx "$new_tag"; then
+        printf '{"status":"ERROR","code":1,"body":{},"message":"%s: tag already exists"}' "$new_tag"
+        exit 1
+    fi
+    list_tags >"$state_dir/tags.new"
+    echo "$new_tag" >>"$state_dir/tags.new"
+    mv "$state_dir/tags.new" "$state_dir/tags"
+    echo "$new_tag" >"$state_dir/current_tag"
+    reply_ok '{}'
+    ;;
+*)
+    echo "fake anka: unknown command: $*" >&2
+    exit 2
+    ;;
+esac

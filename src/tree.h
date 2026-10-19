@@ -135,6 +135,11 @@ le_node  *model_stage_host_file(le_model *m, const char *dest, int arch_idx,
                                 const char *host_path, const le_meta *meta,
                                 char *err, size_t errlen);
 
+/* Fill whiteout_path with "<parent>/.wh.<name>" for target_path. Returns 0,
+ * or -1 with err set when target_path is already a whiteout or too long. */
+int       model_whiteout_path(const char *target_path, char *whiteout_path,
+                              size_t len, char *err, size_t errlen);
+
 /* Stage a whiteout that deletes target_path from the image this layer is
  * applied to. A target held by this archive is marked for removal too, and
  * unstaging the whiteout clears that mark even if the user set it again in
@@ -189,6 +194,10 @@ int       node_path(const le_node *n, char *buf, size_t len);
  * promote its staged additions to members, and reset its counters. Nodes still
  * held by another archive stay in the tree. */
 void      model_reconcile_after_save(le_model *m, int arch_idx);
+
+/* Forget everything slot arch_idx holds (members, marks, staged items) so it
+ * can be loaded again. Paths that only that slot held are freed. */
+void      model_clear_slot(le_model *m, int arch_idx);
 
 /* Flatten visible rows (respecting expansion and optional substring filter).
  * The out and cap args form a reusable growable buffer owned by the caller.

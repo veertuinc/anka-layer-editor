@@ -832,6 +832,20 @@ static const char *mark_result_text(le_mark_result result) {
     }
 }
 
+/* True, with the reason in the message bar, when Space would mark n in slot
+ * and the slot's store does not allow that. */
+static int store_blocks_mark(tui_state *st, const le_node *n, int slot) {
+    const le_arch_state *state = &n->arch[slot];
+    if (state->staged || !state->present || state->removed)
+        return 0;
+    char err[512] = "";
+    if (store_may_remove(session_store(st->sess, slot), n, slot, err,
+                         sizeof(err)) == 0)
+        return 0;
+    set_msg(st, "%s", err);
+    return 1;
+}
+
 static void action_toggle_mark(tui_state *st, le_node *n) {
     int slots[LE_MAX_ARCHIVES];
     int nslots = node_archives(n, st->m->narchives, slots);
@@ -840,6 +854,8 @@ static void action_toggle_mark(tui_state *st, le_node *n) {
         return;
     }
     if (nslots == 1) {
+        if (store_blocks_mark(st, n, slots[0]))
+            return;
         le_mark_result result = model_toggle_mark(st->m, n, slots[0]);
         rebuild_rows(st);
         set_msg(st, "%s", mark_result_text(result));
@@ -851,6 +867,10 @@ static void action_toggle_mark(tui_state *st, le_node *n) {
         set_msg(st, "cancelled");
         return;
     }
+    for (int i = 0; i < nslots; i++)
+        if ((pick == PICK_ALL || pick == slots[i]) &&
+            store_blocks_mark(st, n, slots[i]))
+            return;
     le_mark_result result = pick == PICK_ALL ? model_toggle_mark_all(st->m, n)
                                              : model_toggle_mark(st->m, n, pick);
     rebuild_rows(st);
@@ -995,28 +1015,61 @@ static void action_filter(tui_state *st) {
     rebuild_rows(st);
 }
 
+enum { SAVE_DONE = 0, SAVE_FAILED = -1, SAVE_CANCELLED = 1 };
+
+/* Ask what the slot's store needs to know, then save it. Long saves keep
+ * "saving ..." on screen while they run. */
+static int save_slot(tui_state *st, int slot, char *err, size_t errlen) {
+    le_store *store = session_store(st->sess, slot);
+    char question[512];
+    if (store_pre_save_question(store, question, sizeof(question))) {
+        str_append(question, sizeof(question), (int)strlen(question), " (y/N)");
+        if (!confirm(question))
+            return SAVE_CANCELLED;
+    }
+
+    char prompt[256], save_name[256];
+    const char *accepted_save_name = NULL;
+    if (store_save_name_prompt(store, prompt, sizeof(prompt), save_name,
+                               sizeof(save_name))) {
+        if (!prompt_edit(prompt, save_name, sizeof(save_name), NULL))
+            return SAVE_CANCELLED;
+        if (store_check_save_name(store, save_name, err, errlen) != 0)
+            return SAVE_FAILED;
+        accepted_save_name = save_name;
+    }
+
+    set_msg(st, "saving %s ...", store_label(store));
+    draw(st);
+    return store_save(store, st->m, slot, accepted_save_name, err, errlen) == 0
+               ? SAVE_DONE
+               : SAVE_FAILED;
+}
+
 /* Save every archive with unsaved changes, stopping at the first failure so a
  * broken archive does not hide behind later successes. */
 static void action_save(tui_state *st) {
     char err[512] = "";
-    int saved = 0, failed = -1;
+    int saved = 0, stopped_at = -1, stop_reason = SAVE_DONE;
 
     for (int i = 0; i < st->m->narchives; i++) {
         if (!model_arch_dirty(st->m, i))
             continue;
-        if (archive_save(session_path(st->sess, i), st->m, i, err,
-                         sizeof(err)) == 0)
-            saved++;
-        else {
-            failed = i;
+        stop_reason = save_slot(st, i, err, sizeof(err));
+        if (stop_reason != SAVE_DONE) {
+            stopped_at = i;
             break;
         }
+        saved++;
     }
     rebuild_rows(st);
 
-    if (failed >= 0)
+    if (stop_reason == SAVE_CANCELLED)
+        set_msg(st, "saved %d, save of %s cancelled", saved,
+                session_label(st->sess, stopped_at));
+    else if (stop_reason == SAVE_FAILED)
         set_msg(st, "saved %d, SAVE FAILED %s: %s", saved,
-                session_label(st->sess, failed), err);
+                session_label(st->sess, stopped_at), err);
     else if (saved == 0)
         set_msg(st, "nothing to save");
     else if (multi(st))

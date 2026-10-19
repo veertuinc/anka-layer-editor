@@ -1,0 +1,12 @@
+#!/bin/bash
+# Fake anka_image for tests: "diff -ln <base> <file>" run in img_lib_dir.
+# $FAKE_ANKA_DIRTY is the CHANGED total (default 0).
+set -u
+if [ "${1:-}" != diff ] || [ "${2:-}" != -ln ] || [ ! -e "${3:-}" ] || [ ! -e "${4:-}" ]; then
+    echo "fake anka_image: bad call in $PWD: $*" >&2
+    exit 2
+fi
+{
+    echo "CHANGED: private/etc/hosts"
+    printf 'SAME:\t10\nCHANGED:\t%s\nADDED:\t0\nDELETED:\t0\n' "${FAKE_ANKA_DIRTY:-0}"
+} >&2

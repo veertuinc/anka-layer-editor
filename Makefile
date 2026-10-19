@@ -21,8 +21,9 @@ SRC     := $(wildcard src/*.c)
 OBJ     := $(SRC:.c=.o)
 HDR     := $(wildcard src/*.h)
 
-LIB_OBJ := src/archive.o src/tar.o src/tree.o src/session.o src/util.o
-TEST_BIN := tests/roundtrip_test
+LIB_OBJ := $(filter-out src/main.o src/tui.o,$(OBJ))
+TEST_SUPPORT := tests/test_support.c tests/test_support.h
+TEST_BIN := tests/roundtrip_test tests/vm_mode_test
 
 .PHONY: all build clean install test phase-build
 
@@ -51,13 +52,13 @@ src/%.o: src/%.c
 	@echo "==> Compiling $<"
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(TEST_BIN): tests/roundtrip_test.c $(LIB_OBJ) $(HDR)
-	@echo "==> Building tests"
-	$(CC) $(CFLAGS) -o $@ tests/roundtrip_test.c $(LIB_OBJ) $(LDLIBS)
+tests/%_test: tests/%_test.c $(TEST_SUPPORT) $(LIB_OBJ) $(HDR)
+	@echo "==> Building $@"
+	$(CC) $(CFLAGS) -o $@ $< tests/test_support.c $(LIB_OBJ) $(LDLIBS)
 
 test: $(TEST_BIN)
 	@echo "==> Running tests"
-	./$(TEST_BIN)
+	@for t in $(TEST_BIN); do ./$$t || exit 1; done
 
 clean:
 	@echo "==> Cleaning"

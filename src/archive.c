@@ -1,4 +1,5 @@
 #include "archive.h"
+#include "staged_write.h"
 #include "tar.h"
 #include "util.h"
 
@@ -10,7 +11,6 @@
 #include <unistd.h>
 #include <limits.h>
 #include <libgen.h>
-#include <time.h>
 #include <sys/stat.h>
 
 #define COPY_BUF (1 << 16)
@@ -73,19 +73,13 @@ static int is_archive_root(const char *path) {
     return path[0] == '\0' || (path[0] == '.' && path[1] == '\0');
 }
 
-int archive_load(const char *path, le_model *m, int arch_idx,
-                 char *err, size_t errlen) {
+int archive_load_tar(tar_t *in, const char *source_label, le_model *m,
+                     int arch_idx, char *err, size_t errlen) {
     if (arch_idx < 0 || arch_idx >= m->narchives) {
-        le_seterr(err, errlen, "%s: invalid archive slot %d", path, arch_idx);
+        le_seterr(err, errlen, "%s: invalid archive slot %d", source_label,
+                  arch_idx);
         return -1;
     }
-
-    tar_t *in = tar_ropen(path);
-    if (!in) {
-        le_seterr(err, errlen, "%s: cannot open: %s", path, strerror(errno));
-        return -1;
-    }
-
     tar_entry e;
     int r;
     while ((r = tar_read_next(in, &e)) == 1) {
@@ -101,26 +95,35 @@ int archive_load(const char *path, le_model *m, int arch_idx,
             };
             if (!model_insert(m, e.path, arch_idx, &meta,
                               change_kind_for_devmajor(e.devmajor))) {
-                le_seterr(err, errlen, "%s: failed to insert path '%s'", path,
-                          e.path);
-                tar_close(in);
+                le_seterr(err, errlen, "%s: failed to insert path '%s'",
+                          source_label, e.path);
                 return -1;
             }
         }
         if (tar_skip_data(in) == -1) {
-            le_seterr(err, errlen, "%s: skip error", path);
-            tar_close(in);
+            le_seterr(err, errlen, "%s: read error in '%s'", source_label,
+                      e.path);
             return -1;
         }
     }
-
-    int read_errno = errno;
-    tar_close(in);
     if (r < 0) {
-        le_seterr(err, errlen, "%s: read error: %s", path, strerror(read_errno));
+        le_seterr(err, errlen, "%s: read error: %s", source_label,
+                  strerror(errno));
         return -1;
     }
     return 0;
+}
+
+int archive_load(const char *path, le_model *m, int arch_idx,
+                 char *err, size_t errlen) {
+    tar_t *in = tar_ropen(path);
+    if (!in) {
+        le_seterr(err, errlen, "%s: cannot open: %s", path, strerror(errno));
+        return -1;
+    }
+    int rc = archive_load_tar(in, path, m, arch_idx, err, errlen);
+    tar_close(in);
+    return rc;
 }
 
 /* Copy the current reader entry's data into the writer. */
@@ -131,126 +134,6 @@ static int copy_data(tar_t *in, tar_t *out) {
         if (tar_write_data(out, buf, (size_t)n) == -1)
             return -1;
     return n < 0 ? -1 : 0;
-}
-
-static void entry_from_staged(tar_entry *e, const char *guest,
-                              const le_staged *s, tar_type type) {
-    memset(e, 0, sizeof(*e));
-    strlcpy(e->path, guest, sizeof(e->path));
-    e->type = type;
-    e->mode = s->meta.mode;
-    e->uid = s->meta.uid;
-    e->gid = s->meta.gid;
-    e->mtime = time(NULL);
-    e->devmajor = s->change_kind;
-}
-
-static int write_staged_whiteout(tar_t *out, const char *guest,
-                                 const le_staged *s, char *err, size_t errlen) {
-    tar_entry e;
-    entry_from_staged(&e, guest, s,
-                      s->meta.kind == LE_KIND_DIR ? TAR_DIR : TAR_FILE);
-    if (tar_write_header(out, &e) == -1) {
-        le_seterr(err, errlen, "%s: write error: %s", guest, strerror(errno));
-        return -1;
-    }
-    return 0;
-}
-
-static int copy_host_file(tar_t *out, const char *host_path, off_t expected_size,
-                          char *err, size_t errlen) {
-    FILE *f = fopen(host_path, "rb");
-    if (!f) {
-        le_seterr(err, errlen, "%s: %s", host_path, strerror(errno));
-        return -1;
-    }
-    char buf[COPY_BUF];
-    size_t rd;
-    off_t written = 0;
-    int rc = 0;
-    while ((rd = fread(buf, 1, sizeof(buf), f)) > 0) {
-        if (tar_write_data(out, buf, rd) == -1) {
-            le_seterr(err, errlen, "%s: write error", host_path);
-            rc = -1;
-            break;
-        }
-        written += (off_t)rd;
-    }
-    if (rc == 0 && ferror(f)) {
-        le_seterr(err, errlen, "%s: read error", host_path);
-        rc = -1;
-    }
-    fclose(f);
-    if (rc == 0 && written != expected_size) {
-        le_seterr(err, errlen, "%s: size changed during read (%lld -> %lld)",
-                  host_path, (long long)expected_size, (long long)written);
-        rc = -1;
-    }
-    return rc;
-}
-
-/* Write a staged host file or symlink, read from the host now. */
-static int write_staged_host_file(tar_t *out, const char *guest,
-                                  const le_staged *s, char *err, size_t errlen) {
-    struct stat st;
-    if (lstat(s->host_path, &st) == -1) {
-        le_seterr(err, errlen, "%s: %s", s->host_path, strerror(errno));
-        return -1;
-    }
-    tar_entry e;
-    if (S_ISLNK(st.st_mode)) {
-        entry_from_staged(&e, guest, s, TAR_SYMLINK);
-        ssize_t l = readlink(s->host_path, e.link, sizeof(e.link) - 1);
-        if (l == -1) {
-            le_seterr(err, errlen, "%s: %s", s->host_path, strerror(errno));
-            return -1;
-        }
-        e.link[l] = '\0';
-    } else if (S_ISREG(st.st_mode)) {
-        entry_from_staged(&e, guest, s, TAR_FILE);
-        e.size = st.st_size;
-    } else {
-        le_seterr(err, errlen, "%s: not a regular file or symlink", s->host_path);
-        return -1;
-    }
-    e.mode = (st.st_mode & S_IFMT) | (s->meta.mode & 07777);
-    e.mtime = st.st_mtime;
-
-    if (tar_write_header(out, &e) == -1) {
-        le_seterr(err, errlen, "%s: write error: %s", guest, strerror(errno));
-        return -1;
-    }
-    return e.type == TAR_FILE
-               ? copy_host_file(out, s->host_path, st.st_size, err, errlen)
-               : 0;
-}
-
-static int write_staged(tar_t *out, const le_node *n, int arch_idx,
-                        char *err, size_t errlen) {
-    const le_staged *s = n->arch[arch_idx].staged;
-    char guest[PATH_MAX];
-    if (node_path(n, guest, sizeof(guest)) == -1) {
-        le_seterr(err, errlen, "path too deep for node '%s'", n->name);
-        return -1;
-    }
-    return s->source == LE_STAGED_WHITEOUT
-               ? write_staged_whiteout(out, guest, s, err, errlen)
-               : write_staged_host_file(out, guest, s, err, errlen);
-}
-
-static int append_staged(tar_t *out, const le_node *node, int arch_idx,
-                         char *err, size_t errlen) {
-    for (size_t i = 0; i < node->nchildren; i++) {
-        const le_node *c = node->children[i];
-        if (node_effectively_removed(c, arch_idx))
-            continue;
-        if (c->arch[arch_idx].staged &&
-            write_staged(out, c, arch_idx, err, errlen) == -1)
-            return -1;
-        if (append_staged(out, c, arch_idx, err, errlen) == -1)
-            return -1;
-    }
-    return 0;
 }
 
 /* Skip an original member when it is marked removed (incl. via ancestor) or
@@ -357,7 +240,7 @@ int archive_save(const char *path, le_model *m, int arch_idx,
     }
 
     int failed = copy_kept_entries(path, m, arch_idx, out, err, errlen) == -1 ||
-                 append_staged(out, m->root, arch_idx, err, errlen) == -1;
+                 staged_write_all(out, m->root, arch_idx, err, errlen) == -1;
     if (tar_close(out) == -1 && !failed) {
         le_seterr(err, errlen, "%s: finalize error", tmp);
         failed = 1;
