@@ -1712,7 +1712,7 @@ static void action_whiteout(tui_state *st, le_node *cur) {
     }
     reveal_node(st, n);
     set_msg(st, "staged whiteout for %s%s", target,
-            layer_held_target ? "; the layer copy is marked for removal" : "");
+            layer_held_target ? "; the layer copy is dropped" : "");
 }
 
 static void action_filter(tui_state *st) {

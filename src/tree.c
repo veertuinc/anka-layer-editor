@@ -525,7 +525,7 @@ static int check_stage_target(le_model *m, const char *path, int arch_idx,
         }
         if (next->arch[arch_idx].removed) {
             le_seterr(err, errlen,
-                      "'%s' is marked for removal in this archive; unmark it first",
+                      "'%s' is dropped in this archive; press u on it first",
                       where);
             return -1;
         }
