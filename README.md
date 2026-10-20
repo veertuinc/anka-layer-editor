@@ -324,3 +324,7 @@ Regenerate the README pictures with `make screenshots` (needs `tmux`, `python3`,
 Pillow). The letters are Menlo Bold on macOS, or DejaVu Sans Mono Bold on Linux. VM
 mode in that command uses the fake `anka` from the tests, so you do not need a VM.
 Commit the PNG files under `screenshots/`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
