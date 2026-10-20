@@ -19,13 +19,13 @@ Regenerate:
 
 ## Scenarios
 
-**No yellow** (directory scaffolding overlaps; no conflicting files):
+**No gold bar** (directory scaffolding overlaps; no conflicting files):
 
 ```bash
 ./anka-oci-tag-editor testdata/pkg-cmake.tar.gz testdata/pkg-wireguard.tar.gz
 ```
 
-**Yellow + `!`** on shared files and the parents that lead to them
+**Gold + `!`** on shared files and the parents that lead to them
 (`usr/`, `usr/local/`, `usr/local/etc/`, …):
 
 ```bash

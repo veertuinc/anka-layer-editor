@@ -61,14 +61,23 @@ static int read_key(void) {
     }
 }
 
-/* Color pairs: paths in more than one archive (and their parents), whiteout
- * entries, and the selected row. The selected row is not reverse video, so it
- * does not match the header and footer bars. */
+/* Color pairs from the Veertu site palette (https://veertu.com/):
+ * shared paths: amber #FCB900, selected row: light purple #9B51E0, whiteouts:
+ * rose #E21E79. 256-color terminals get the nearest cube color; 8-color
+ * terminals get yellow / magenta / red. Black text on the purple bar so the
+ * letters stay readable. */
 #define PAIR_SHARED   1
 #define PAIR_WHITEOUT 2
 #define PAIR_SELECTED 3
+#define VEERTU_AMBER_256  214   /* #FFAF00 ~ #FCB900 */
+#define VEERTU_PURPLE_256 141   /* #AF87FF ~ #9B51E0 */
+#define VEERTU_ROSE_256   162   /* #D70087 ~ #E21E79 */
 static int have_colors;
 static int have_select_color;
+
+static int brand_color(int color_256, int color_8) {
+    return COLORS >= 256 ? color_256 : color_8;
+}
 
 #define HELP_MAX_LINES 4
 #define HELP_LINE_CAP  256
@@ -201,7 +210,7 @@ static void format_help(const tui_state *st, char *buf, size_t buflen) {
                          " | w = whiteout | / = filter | s = save | q = quit"
                          " | ? = more");
     if (multi(st))
-        str_append(buf, buflen, off, " | yellow = file in multiple archives");
+        str_append(buf, buflen, off, " | gold = file in multiple archives");
 }
 
 /* Wrap text to width, breaking on spaces when possible. Returns line count. */
@@ -305,7 +314,7 @@ static void draw_bar(int y, const char *text) {
 
 /* ---- rendering ---- */
 
-/* Mark files that belong to 2+ archives, and paint their ancestors yellow so
+/* Mark files that belong to 2+ archives, and paint their ancestors so
  * collapsed folders point the way. Directories themselves never warn just for
  * being present in several archives. */
 static int mark_shared_warn(le_node *n, int narchives) {
@@ -446,25 +455,28 @@ static void draw_row(tui_state *st, int screen_y, size_t idx) {
         append_entry_text(line, sizeof(line), off, n, meta);
 
     int attr = 0;
+    int fill_row = selected;
     if (selected && have_select_color)
-        attr = COLOR_PAIR(PAIR_SELECTED);
+        attr = COLOR_PAIR(PAIR_SELECTED) | A_BOLD;
     else if (selected)
-        attr = A_REVERSE;
+        attr = A_REVERSE | A_BOLD;
     else if (rs.removed_everywhere)
         attr = A_DIM;
     else {
         int color_pair = whiteout ? PAIR_WHITEOUT
                          : n->shared_warn ? PAIR_SHARED : 0;
-        if (color_pair && have_colors)
+        if (color_pair && have_colors) {
             attr = COLOR_PAIR(color_pair);
-        else if (color_pair)
+            if (color_pair == PAIR_SHARED)
+                fill_row = 1;
+        } else if (color_pair)
             attr = A_BOLD;          /* no color: keep these rows obvious */
     }
 
     if (attr)
         attron(attr);
     mvaddnstr(screen_y, 0, line, COLS);
-    if (selected) {                 /* fill row for a solid highlight bar */
+    if (fill_row) {                 /* fill row for a solid highlight bar */
         int len = (int)strlen(line);
         for (int x = len; x < COLS; x++)
             addch(' ');
@@ -552,7 +564,7 @@ static void draw_help(const tui_state *st) {
         "  In prompts: Enter accepts, Esc cancels, Tab completes host paths.",
         "",
         "  Legend: 'X' marked, '~' removed via parent, '[+]' staged,",
-        "  '[wh]' whiteout (red). The details line shows the archives that",
+        "  '[wh]' whiteout (rose). The details line shows the archives that",
         "  hold the selection, its Anka change kind (added / modified /",
         "  whiteout) and edits in parentheses, its mode, and its owner.",
         NULL,
@@ -561,7 +573,7 @@ static void draw_help(const tui_state *st) {
         "",
         "  With several archives loaded, each row carries a membership column:",
         "  [12] in both, [1.] only the first, [.+] staged into the second.",
-        "  Files in more than one archive are yellow; parents leading to them too.",
+        "  Files in more than one archive have a gold bar; parents too.",
         "  '!' means the entries disagree on type/size.",
         "  Space on a shared path asks which archive (or all of them);",
         "  adding a file or a whiteout asks which archive receives it.",
@@ -1150,14 +1162,17 @@ static int init_screen(void) {
 
     have_colors = 0;
     if (has_colors() && start_color() != ERR) {
-        /* Prefer the terminal default background so colored rows sit on the
-         * normal list color rather than a hard-coded black panel. */
+        /* Prefer the terminal default background so most rows sit on the
+         * normal list color. Shared, selected, and whiteout rows use the
+         * Veertu amber, purple, and rose. */
         use_default_colors();
-        have_colors = init_pair(PAIR_SHARED, COLOR_YELLOW, -1) != ERR &&
-                      init_pair(PAIR_WHITEOUT, COLOR_RED, -1) != ERR;
-        /* Black on cyan stays readable on a light terminal and on a dark one,
-         * and it is not the grey of a reverse-video bar. */
-        have_select_color = init_pair(PAIR_SELECTED, COLOR_BLACK, COLOR_CYAN) != ERR;
+        have_colors = init_pair(PAIR_SHARED, COLOR_BLACK,
+                                brand_color(VEERTU_AMBER_256, COLOR_YELLOW)) != ERR &&
+                      init_pair(PAIR_WHITEOUT,
+                                brand_color(VEERTU_ROSE_256, COLOR_RED), -1) != ERR;
+        have_select_color = init_pair(PAIR_SELECTED, COLOR_BLACK,
+                                      brand_color(VEERTU_PURPLE_256,
+                                                  COLOR_MAGENTA)) != ERR;
     }
     return 0;
 }

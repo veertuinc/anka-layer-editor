@@ -197,8 +197,8 @@ X [12]  v etc/          both archives contain etc/
   [.+]      added.txt   staged into the second archive, not saved yet
 ```
 
-Files that exist in more than one archive are yellow. Parent folders that lead to
-such a file are yellow too, so you can expand down toward the overlap; folders that
+Files that exist in more than one archive have a gold bar. Parent folders that lead to
+such a file have it too, so you can expand down toward the overlap; folders that
 merely appear in several archives without a shared file underneath stay normal. A
 `!` after the column means the entries disagree about the entry's type or size.
 Paths are matched by name only; file contents are never hashed or compared.

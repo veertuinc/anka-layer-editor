@@ -47,14 +47,44 @@ expect_arrow_keys_move_selection() {
     wait_for_pane "^ usr/local " || fail "Down did not select usr/local ($when)"
 }
 
+editor_pid() {
+    pgrep -f "$root/anka-oci-tag-editor testdata/pkg-cmake.tar.gz" | head -1
+}
+
+expect_pid_stable() {
+    local when=$1 pid
+    pid=$(editor_pid)
+    [ -n "$pid" ] || fail "the editor is not running ($when)"
+    sleep 2
+    local later
+    later=$(editor_pid)
+    [ "$pid" = "$later" ] || fail "the editor restarted without a source change ($when, pid $pid -> $later)"
+}
+
 cleanup
 tmux -f /dev/null new-session -d -s "$session" -x 100 -y 24 \
     "./scripts/dev.sh testdata/pkg-cmake.tar.gz"
 wait_for_pane "anka-oci-tag-editor - pkg-cmake.tar.gz" || fail "the editor did not start"
 expect_arrow_keys_move_selection "first start"
+expect_pid_stable "after first start"
+
+# GNU Make 3.81 compares timestamps in whole seconds. find -newer does not.
+# A source file that is newer than the binary by less than one second must
+# not restart the editor in a loop.
+python3 - "$root" << 'PY'
+import os, sys, time
+root = sys.argv[1]
+binary = os.path.join(root, "anka-oci-tag-editor")
+source = os.path.join(root, "src", "main.c")
+now = time.time()
+os.utime(binary, (now, now))
+os.utime(source, (now + 0.7, now + 0.7))
+PY
+expect_pid_stable "after a subsecond source mtime"
 
 touch src/main.c
 wait_for_pane "> usr/" || fail "the editor did not restart after a source change"
 expect_arrow_keys_move_selection "after restart"
+expect_pid_stable "after restart"
 
 echo "dev_reload_test: ok"

@@ -28,7 +28,7 @@ ANSI = (
     (20, 20, 20),
     (205, 49, 49),
     (13, 188, 121),
-    (229, 181, 103),
+    (255, 210, 0),
     (36, 114, 200),
     (188, 63, 188),
     (17, 168, 205),
@@ -42,6 +42,17 @@ ANSI = (
     (120, 220, 240),
     (255, 255, 255),
 )
+CUBE = (0, 95, 135, 175, 215, 255)
+
+
+def xterm_256(index):
+    if index < 16:
+        return ANSI[index]
+    if index < 232:
+        index -= 16
+        return (CUBE[index // 36], CUBE[(index % 36) // 6], CUBE[index % 6])
+    grey = 8 + (index - 232) * 10
+    return (grey, grey, grey)
 
 
 class Style:
@@ -58,8 +69,8 @@ class Style:
         self.dim = False
 
     def colors(self):
-        fg = DEFAULT_FG if self.fg is None else ANSI[self.fg]
-        bg = DEFAULT_BG if self.bg is None else ANSI[self.bg]
+        fg = DEFAULT_FG if self.fg is None else xterm_256(self.fg)
+        bg = DEFAULT_BG if self.bg is None else xterm_256(self.bg)
         if self.reverse:
             fg, bg = bg, fg
         if self.dim:
@@ -98,10 +109,10 @@ def apply_sgr(style, params):
         elif 100 <= code <= 107:
             style.bg = 8 + (code - 100)
         elif code == 38 and i + 2 < len(params) and params[i + 1] == 5:
-            style.fg = params[i + 2] % 16
+            style.fg = params[i + 2]
             i += 2
         elif code == 48 and i + 2 < len(params) and params[i + 1] == 5:
-            style.bg = params[i + 2] % 16
+            style.bg = params[i + 2]
             i += 2
         i += 1
 
