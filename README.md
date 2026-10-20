@@ -25,44 +25,6 @@ It is a **completely separate product**. It does not link against, include, or m
 any Anka code. In archive mode it only reads and writes a standard gzip tar, and you
 run the Anka steps yourself. VM mode runs the `anka` command for you.
 
-The file tree of two layers. Yellow rows are paths that both layers hold.
-
-![File tree of two layers](screenshots/tree.png)
-
-A filter for `cmake`. Matching branches stay in the tree. The status bar shows the filter.
-
-![Filter for cmake](screenshots/filter.png)
-
-A file dropped from the first archive. `X` replaces that archive's number.
-
-![A dropped file](screenshots/marked.png)
-
-A staged whiteout. `[wh]` (rose) deletes that path from the base image.
-
-![A staged whiteout](screenshots/whiteout.png)
-
-A host file staged into the archive. `[+]` is not saved yet.
-
-![A staged host file](screenshots/staged.png)
-
-The help overlay.
-
-![Help overlay](screenshots/help.png)
-
-Enter on a file opens a pager. `q` closes it.
-
-![File preview](screenshots/preview.png)
-
-`d` on a text file that two archives hold opens a side-by-side diff. Both sides stay on the same lines as you scroll.
-
-![File diff](screenshots/diff.png)
-
-VM mode on a stopped VM. The header shows the current OCI tag.
-
-![VM mode](screenshots/vm.png)
-
-Regenerate the pictures with `make screenshots` (needs `tmux`, `python3`, and Pillow). The letters are Menlo Bold on macOS, or DejaVu Sans Mono Bold on Linux. VM mode in that command uses the fake `anka` from the tests, so you do not need a VM. Commit the PNG files under `screenshots/`.
-
 ## Where it fits in the Anka workflow
 
 ```bash
@@ -151,6 +113,21 @@ In prompts, `Enter` accepts, `Esc` cancels, and `Tab` completes host paths. Prom
 start with a useful value: the selected directory for destinations and whiteouts,
 the current filter, and the owner of the nearest entry above the destination.
 
+<details>
+<summary>Help overlay (<code>?</code>)</summary>
+
+![Help overlay](screenshots/help.png)
+
+</details>
+
+`/` filters by substring. Matching branches stay in the tree.
+
+![Filter for cmake](screenshots/filter.png)
+
+| Enter opens a pager (`q` closes it) | `d` diffs a text file two archives hold |
+|---|---|
+| ![File preview](screenshots/preview.png) | ![File diff](screenshots/diff.png) |
+
 Row markers:
 
 - `X` will drop from the layer on save (this row, or a parent). With several
@@ -158,6 +135,10 @@ Row markers:
 - `[+]` is staged and not saved yet.
 - `[wh]` (red) is a whiteout, with the name it deletes.
 - `a -> b` is a symlink, `a => b` is a hard link.
+
+| A dropped file (`X`) | A staged host file (`[+]`) |
+|---|---|
+| ![A dropped file](screenshots/marked.png) | ![A staged host file](screenshots/staged.png) |
 
 The line above the status bar shows the selected path in full, the archives that
 hold it, its mode, and its owner. After each archive name, the parentheses show
@@ -174,7 +155,9 @@ only its name. With one archive open, the line shows only the state:
 
 A layer entry whose name starts with `.wh.` tells Anka to delete the rest of the name
 from the base image. For example, `usr/local/bin/.wh.tool` deletes
-`usr/local/bin/tool`. The editor shows these entries as `[wh] tool` with a note:
+`usr/local/bin/tool`. The editor shows these entries as `[wh] tool` with a note.
+
+![A staged whiteout](screenshots/whiteout.png)
 
 ```
       v bin/
@@ -214,6 +197,10 @@ anka-oci-tag-editor layer-a.tar.gz layer-b.tar.gz
 Tiny Homebrew-style fixtures for trying this live are in [`testdata/`](testdata/)
 (regenerate with `./testdata/build.sh`).
 
+The file tree of two layers. Yellow rows are paths that both layers hold.
+
+![File tree of two layers](screenshots/tree.png)
+
 Every path appears once, and a membership column shows which archives hold it:
 
 ```
@@ -250,6 +237,10 @@ VM mode opens the top layer of a stopped VM's current
 You do not export a tar first. When you save, the editor applies your edits to the
 VM's working disk and commits them as a new local OCI tag on top of the current OCI
 tag.
+
+The header shows the current OCI tag.
+
+![VM mode](screenshots/vm.png)
 
 What the editor does:
 
@@ -328,3 +319,8 @@ and the new OCI tag's layer held only those changes.
   global pax headers, GNU long names, and GNU base-256 sizes, and it checks each
   header checksum.
 - No persisted edit state: closing without saving discards changes.
+
+Regenerate the README pictures with `make screenshots` (needs `tmux`, `python3`, and
+Pillow). The letters are Menlo Bold on macOS, or DejaVu Sans Mono Bold on Linux. VM
+mode in that command uses the fake `anka` from the tests, so you do not need a VM.
+Commit the PNG files under `screenshots/`.

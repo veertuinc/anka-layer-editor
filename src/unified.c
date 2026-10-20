@@ -105,13 +105,16 @@ static int lcs_ops(line_span *a, size_t na, line_span *b, size_t nb,
     }
     free(dp);
 
-    unsigned char *ops = malloc(nrev ? nrev : 1);
-    if (!ops) {
-        free(rev);
-        return -1;
+    unsigned char *ops = NULL;
+    if (nrev) {
+        ops = malloc(nrev);
+        if (!ops) {
+            free(rev);
+            return -1;
+        }
+        for (size_t k = 0; k < nrev; k++)
+            ops[k] = rev[nrev - 1 - k];
     }
-    for (size_t k = 0; k < nrev; k++)
-        ops[k] = rev[nrev - 1 - k];
     free(rev);
     *ops_out = ops;
     *nops_out = nrev;
@@ -122,13 +125,16 @@ static int lcs_ops(line_span *a, size_t na, line_span *b, size_t nb,
 static int whole_replace_ops(size_t na, size_t nb, unsigned char **ops_out,
                              size_t *nops_out) {
     size_t nops = na + nb;
-    unsigned char *ops = nops ? malloc(nops) : malloc(1);
-    if (!ops)
-        return -1;
-    for (size_t i = 0; i < na; i++)
-        ops[i] = ED_DEL;
-    for (size_t i = 0; i < nb; i++)
-        ops[na + i] = ED_INS;
+    unsigned char *ops = NULL;
+    if (nops) {
+        ops = malloc(nops);
+        if (!ops)
+            return -1;
+        for (size_t i = 0; i < na; i++)
+            ops[i] = ED_DEL;
+        for (size_t i = 0; i < nb; i++)
+            ops[na + i] = ED_INS;
+    }
     *ops_out = ops;
     *nops_out = nops;
     return 0;
