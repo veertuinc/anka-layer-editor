@@ -473,19 +473,20 @@ static void draw_row(tui_state *st, int screen_y, size_t idx) {
         attroff(attr);
 }
 
-/* What one archive holds and plans for the node, e.g. "added, marked". */
-static int append_arch_state(char *buf, size_t cap, int off, const le_node *n,
+/* What one archive holds and plans for the node, e.g. "added, marked".
+ * Empty when the archive only holds the path, with no change kind and no
+ * edit. */
+static int format_arch_state(char *buf, size_t cap, const le_node *n,
                              int arch_idx) {
     const le_arch_state *a = &n->arch[arch_idx];
-    int wrote_any = 0;
+    int off = 0, wrote_any = 0;
+    buf[0] = '\0';
 #define STATE_PART(text) \
     do { off = str_append(buf, cap, off, "%s%s", wrote_any ? ", " : "", text); \
          wrote_any = 1; } while (0)
     const char *kind = a->present ? change_kind_label(a->change_kind) : NULL;
     if (kind)
         STATE_PART(kind);
-    else if (a->present)
-        STATE_PART("member");
     if (a->staged)
         STATE_PART(a->staged->source == LE_STAGED_WHITEOUT ? "staged whiteout"
                                                            : "staged");
@@ -497,7 +498,8 @@ static int append_arch_state(char *buf, size_t cap, int off, const le_node *n,
     return off;
 }
 
-/* Details for the selected row: full path, per-archive state, mode, owner. */
+/* Details for the selected row: full path, the archives that hold it with
+ * their state, mode, and owner. One archive: only the state, no name. */
 static void format_details(const tui_state *st, char *buf, size_t cap) {
     buf[0] = '\0';
     if (st->nrows == 0)
@@ -507,22 +509,25 @@ static void format_details(const tui_state *st, char *buf, size_t cap) {
     node_path(n, path, sizeof(path));
     int off = str_append(buf, cap, 0, " ");
     off = str_append_safe(buf, cap, off, path);
-    off = str_append(buf, cap, off, " |");
 
     int slots[LE_MAX_ARCHIVES];
     int nslots = node_archives(n, st->m->narchives, slots);
-    for (int i = 0; i < nslots; i++) {
-        off = str_append(buf, cap, off, " ");
-        if (multi(st))
-            off = str_append(buf, cap, off, "%d: ", slots[i] + 1);
-        off = append_arch_state(buf, cap, off, n, slots[i]);
-        if (i + 1 < nslots)
-            off = str_append(buf, cap, off, " ");
+    char state[256];
+    if (multi(st)) {
+        for (int i = 0; i < nslots; i++) {
+            off = str_append(buf, cap, off, "%s", i == 0 ? "   in " : ", ");
+            off = str_append_safe(buf, cap, off,
+                                  session_label(st->sess, slots[i]));
+            if (format_arch_state(state, sizeof(state), n, slots[i]))
+                off = str_append(buf, cap, off, " (%s)", state);
+        }
+    } else if (nslots == 1 && format_arch_state(state, sizeof(state), n, slots[0])) {
+        off = str_append(buf, cap, off, "   %s", state);
     }
 
     const le_meta *meta = node_display_meta(n, st->m->narchives);
     if (n->meta_set || meta != &n->meta)
-        str_append(buf, cap, off, " | mode %04o owner %u:%u",
+        str_append(buf, cap, off, "   mode %04o   owner %u:%u",
                    (unsigned)(meta->mode & 07777), (unsigned)meta->uid,
                    (unsigned)meta->gid);
 }
@@ -547,8 +552,9 @@ static void draw_help(const tui_state *st) {
         "  In prompts: Enter accepts, Esc cancels, Tab completes host paths.",
         "",
         "  Legend: 'X' marked, '~' removed via parent, '[+]' staged,",
-        "  '[wh]' whiteout (red). The details line shows the Anka change kind",
-        "  (added / modified / whiteout), mode, and owner of the selection.",
+        "  '[wh]' whiteout (red). The details line shows the archives that",
+        "  hold the selection, its Anka change kind (added / modified /",
+        "  whiteout) and edits in parentheses, its mode, and its owner.",
         NULL,
     };
     const char *multi_lines[] = {

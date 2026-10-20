@@ -25,7 +25,7 @@ LIB_OBJ := $(filter-out src/main.o src/tui.o,$(OBJ))
 TEST_SUPPORT := tests/test_support.c tests/test_support.h
 TEST_BIN := tests/roundtrip_test tests/vm_mode_test
 
-.PHONY: all build clean install test phase-build screenshots dev
+.PHONY: all build clean install test test-dev phase-build screenshots dev
 
 # Sample layers for `make dev` when DEV_ARGS is not set.
 DEV_ARGS ?= testdata/pkg-cmake.tar.gz testdata/pkg-jq.tar.gz
@@ -72,6 +72,11 @@ screenshots: build
 # make dev DEV_ARGS='--vm myvm'   or   make dev DEV_ARGS='layer.tar.gz'
 dev:
 	./scripts/dev.sh $(DEV_ARGS)
+
+# Keys and reload of `make dev`. Not part of `make`: it needs tmux.
+test-dev: build
+	@echo "==> Testing make dev"
+	./tests/dev_reload_test.sh
 
 clean:
 	@echo "==> Cleaning"

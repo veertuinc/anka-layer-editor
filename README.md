@@ -81,7 +81,7 @@ sudo make install            # installs to /usr/local/bin
 make install PREFIX=~/.local
 ```
 
-`make dev` builds the editor, opens the two sample layers, and restarts it when you change a file under `src/`. Quit with `q` or Ctrl-C. Pass other arguments with `make dev DEV_ARGS='layer.tar.gz'`.
+`make dev` builds the editor, opens the two sample layers, and restarts it when you change a file under `src/`. Quit with `q` or Ctrl-C. Pass other arguments with `make dev DEV_ARGS='layer.tar.gz'`. `make test-dev` checks in tmux that the keys work before and after a restart.
 
 ## CI
 
@@ -133,9 +133,16 @@ Row markers:
 - `[wh]` (red) is a whiteout, with the name it deletes.
 - `a -> b` is a symlink, `a => b` is a hard link.
 
-The line above the status bar shows the selected path in full, its state in each
-archive (member, staged, marked, and the Anka change kind: added, modified, or
-whiteout), its mode, and its owner.
+The line above the status bar shows the selected path in full, the archives that
+hold it, its mode, and its owner. After each archive name, the parentheses show
+the Anka change kind (added, modified, or whiteout) and your edits (staged,
+marked, or removed via parent). An archive with no change kind and no edit shows
+only its name. With one archive open, the line shows only the state:
+
+```text
+ usr/local   in pkg-cmake.tar.gz, pkg-jq.tar.gz   mode 0755   owner 501:20
+ usr/local/README.md   in pkg-cmake.tar.gz (marked), pkg-jq.tar.gz   mode 0644   owner 501:20
+```
 
 ## Whiteouts
 

@@ -1,0 +1,60 @@
+#!/bin/bash
+# Check `scripts/dev.sh` in a tmux pane: arrow keys reach the editor, and they
+# still reach it after a source change restarts the editor.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+session=oci-tag-editor-dev-test
+
+if ! command -v tmux >/dev/null; then
+    echo "dev_reload_test: tmux is not installed" >&2
+    exit 1
+fi
+
+cleanup() {
+    tmux kill-session -t "$session" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+fail() {
+    echo "dev_reload_test: FAIL: $1" >&2
+    tmux capture-pane -p -t "$session" >&2 2>/dev/null || true
+    exit 1
+}
+
+pane_has() {
+    tmux capture-pane -p -t "$session" | grep -q -- "$1"
+}
+
+wait_for_pane() {
+    local needle=$1 attempt=0
+    while [ "$attempt" -lt 100 ]; do
+        pane_has "$needle" && return 0
+        attempt=$((attempt + 1))
+        sleep 0.1
+    done
+    return 1
+}
+
+# Right expands usr/, Down selects usr/local. The details line then starts
+# with the selected path.
+expect_arrow_keys_move_selection() {
+    local when=$1
+    tmux send-keys -t "$session" Right
+    wait_for_pane "v usr/" || fail "Right did not expand usr/ ($when)"
+    tmux send-keys -t "$session" Down
+    wait_for_pane "^ usr/local " || fail "Down did not select usr/local ($when)"
+}
+
+cleanup
+tmux -f /dev/null new-session -d -s "$session" -x 100 -y 24 \
+    "./scripts/dev.sh testdata/pkg-cmake.tar.gz"
+wait_for_pane "anka-oci-tag-editor - pkg-cmake.tar.gz" || fail "the editor did not start"
+expect_arrow_keys_move_selection "first start"
+
+touch src/main.c
+wait_for_pane "> usr/" || fail "the editor did not restart after a source change"
+expect_arrow_keys_move_selection "after restart"
+
+echo "dev_reload_test: ok"

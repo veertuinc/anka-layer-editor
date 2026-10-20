@@ -3,6 +3,10 @@
 # Quit with q or Ctrl-C. A failed build leaves the running editor in place.
 set -euo pipefail
 
+# Background jobs in a non-interactive script get stdin from /dev/null unless
+# stdin is redirected explicitly; keep the terminal on fd 3 for the editor child.
+exec 3<&0
+
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 bin=$root/anka-oci-tag-editor
@@ -23,7 +27,9 @@ cleanup() {
     fi
     rm -rf "$tmpdir"
 }
-trap cleanup INT TERM EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap cleanup EXIT
 
 source_changed_since() {
     local newer
@@ -61,7 +67,7 @@ watch_sources &
 watcher=$!
 
 while true; do
-    "$bin" "$@" &
+    "$bin" "$@" <&3 3<&- &
     child=$!
     echo "$child" >"$pidfile"
     set +e
