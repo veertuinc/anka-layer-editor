@@ -1,5 +1,8 @@
 #include "tui.h"
 #include "archive.h"
+#include "member_read.h"
+#include "preview.h"
+#include "unified.h"
 #include "util.h"
 
 #include <ncurses.h>
@@ -206,7 +209,9 @@ static void complete_host_path(char *buf, size_t len) {
 /* Build the keybinding footer text (single logical line, may wrap on draw). */
 static void format_help(const tui_state *st, char *buf, size_t buflen) {
     int off = str_append(buf, buflen, 0,
-                         "arrows = move | Space = mark/undo | a = add host file"
+                         "arrows = move | Enter = open file | d = diff"
+                         " | x = drop from layer | u = undo drop or staged"
+                         " | a = add host file"
                          " | w = whiteout | / = filter | s = save | q = quit"
                          " | ? = more");
     if (multi(st))
@@ -339,8 +344,8 @@ static void refresh_shared_warn(tui_state *st) {
     st->shared_warn_valid = 1;
 }
 
-/* Fixed-width membership column: one slot per archive, "1".."8" when the
- * archive holds the path, '+' when it is a staged add, '.' when absent. */
+/* Fixed-width membership column: one slot per archive. See
+ * node_archive_slot_char. */
 static void archive_badge(const tui_state *st, const le_node *n,
                           char *buf, size_t len) {
     buf[0] = '\0';
@@ -348,14 +353,8 @@ static void archive_badge(const tui_state *st, const le_node *n,
         return;
     size_t off = 0;
     buf[off++] = '[';
-    for (int i = 0; i < st->m->narchives; i++) {
-        if (n->arch[i].staged)
-            buf[off++] = '+';
-        else if (n->arch[i].present)
-            buf[off++] = (char)('1' + i);
-        else
-            buf[off++] = '.';
-    }
+    for (int i = 0; i < st->m->narchives; i++)
+        buf[off++] = node_archive_slot_char(n, i);
     buf[off++] = ']';
     buf[off++] = n->mismatch ? '!' : ' ';
     buf[off++] = ' ';
@@ -363,8 +362,7 @@ static void archive_badge(const tui_state *st, const le_node *n,
 }
 
 typedef struct {
-    int explicit_removed;       /* marked in at least one archive */
-    int removed_somewhere;      /* removed (directly or via a parent) somewhere */
+    int removed_somewhere;      /* dropped (directly or via a parent) somewhere */
     int removed_everywhere;     /* every archive holding it drops it */
     int staged;                 /* staged in at least one archive */
 } row_state;
@@ -372,11 +370,9 @@ typedef struct {
 static row_state row_state_for(const tui_state *st, const le_node *n) {
     int slots[LE_MAX_ARCHIVES];
     int nslots = node_archives(n, st->m->narchives, slots);
-    row_state rs = {0, 0, nslots > 0, 0};
+    row_state rs = {0, nslots > 0, 0};
     for (int i = 0; i < nslots; i++) {
         int a = slots[i];
-        if (n->arch[a].removed)
-            rs.explicit_removed = 1;
         if (n->arch[a].staged)
             rs.staged = 1;
         if (node_effectively_removed(n, a))
@@ -430,17 +426,17 @@ static void draw_row(tui_state *st, int screen_y, size_t idx) {
     const le_meta *meta = node_display_meta(n, st->m->narchives);
     row_state rs = row_state_for(st, n);
 
-    char flag = ' ';
-    if (rs.explicit_removed)
-        flag = 'X';                 /* explicitly marked */
-    else if (rs.removed_somewhere)
-        flag = '~';                 /* removed via ancestor */
-
     char badge[LE_MAX_ARCHIVES + 8];
     archive_badge(st, n, badge, sizeof(badge));
 
     char line[4096];
-    int off = str_append(line, sizeof(line), 0, "%c %s", flag, badge);
+    int off;
+    if (multi(st))
+        off = str_append(line, sizeof(line), 0, "%s", badge);
+    else {
+        char flag = rs.removed_somewhere ? 'X' : ' ';
+        off = str_append(line, sizeof(line), 0, "%c %s", flag, badge);
+    }
     for (int d = 0; d < r->depth; d++)
         off = str_append(line, sizeof(line), off, "  ");
 
@@ -485,7 +481,7 @@ static void draw_row(tui_state *st, int screen_y, size_t idx) {
         attroff(attr);
 }
 
-/* What one archive holds and plans for the node, e.g. "added, marked".
+/* What one archive holds and plans for the node, e.g. "added, dropped".
  * Empty when the archive only holds the path, with no change kind and no
  * edit. */
 static int format_arch_state(char *buf, size_t cap, const le_node *n,
@@ -503,9 +499,9 @@ static int format_arch_state(char *buf, size_t cap, const le_node *n,
         STATE_PART(a->staged->source == LE_STAGED_WHITEOUT ? "staged whiteout"
                                                            : "staged");
     if (a->removed)
-        STATE_PART("marked");
+        STATE_PART("dropped");
     else if (node_effectively_removed(n, arch_idx))
-        STATE_PART("removed via parent");
+        STATE_PART("dropped with parent");
 #undef STATE_PART
     return off;
 }
@@ -553,7 +549,10 @@ static void draw_help(const tui_state *st) {
         "  Left / h        Collapse directory (or jump to parent)",
         "  PgUp/PgDn       Page up / down",
         "  g / G           Jump to top / bottom",
-        "  Space           Mark for removal (subtree), or undo a staged item",
+        "  Enter           Open the selected file (less-like preview)",
+        "  d               Side-by-side diff of the file across two archives",
+        "  x               Drop the path from the layer on save (toggles X)",
+        "  u               Undo a drop (X), or cancel a staged add or whiteout",
         "  a               Add a host file at a destination path",
         "  w               Stage a whiteout: delete a path from the base image",
         "  /               Filter by substring (empty clears)",
@@ -562,20 +561,15 @@ static void draw_help(const tui_state *st) {
         "  ?               Toggle this help",
         "",
         "  In prompts: Enter accepts, Esc cancels, Tab completes host paths.",
-        "",
-        "  Legend: 'X' marked, '~' removed via parent, '[+]' staged,",
-        "  '[wh]' whiteout (rose). The details line shows the archives that",
-        "  hold the selection, its Anka change kind (added / modified /",
-        "  whiteout) and edits in parentheses, its mode, and its owner.",
+        "  Legend: 'X' dropped on save, '[+]' staged, '[wh]' whiteout (rose).",
         NULL,
     };
     const char *multi_lines[] = {
         "",
-        "  With several archives loaded, each row carries a membership column:",
-        "  [12] in both, [1.] only the first, [.+] staged into the second.",
-        "  Files in more than one archive have a gold bar; parents too.",
+        "  Membership: [12] both, [1.] first only, [X2] dropped from first,",
+        "  [.+] staged into the second. Gold bar: file in more than one archive.",
         "  '!' means the entries disagree on type/size.",
-        "  Space on a shared path asks which archive (or all of them);",
+        "  x on a shared path asks which archive (or all of them);",
         "  adding a file or a whiteout asks which archive receives it.",
         NULL,
     };
@@ -641,7 +635,7 @@ static void draw(tui_state *st) {
 
     char status[1024];
     off = str_append(status, sizeof(status), 0,
-                     " %zu paths | marked: %zu | staged: %zu",
+                     " %zu paths | drop: %zu | staged: %zu",
                      st->m->total, st->m->marked, st->m->added);
     if (st->filtering) {
         off = str_append(status, sizeof(status), off, " | filter: \"");
@@ -673,10 +667,10 @@ static int is_utf8_continuation(char c) {
 typedef void (*prompt_completer)(char *buf, size_t len);
 
 /* Edit buf (which holds the initial text) on the bottom row. Enter accepts,
- * Esc cancels, Tab calls complete when given. Returns 1 when accepted with
- * text, 0 on cancel or empty. */
-static int prompt_edit(const char *label, char *buf, size_t len,
-                       prompt_completer complete) {
+ * Esc cancels, Tab calls complete when given. Returns 1 when accepted, 0 on
+ * cancel. Empty Enter is accepted only when accept_empty is set. */
+static int prompt_edit_ex(const char *label, char *buf, size_t len,
+                          prompt_completer complete, int accept_empty) {
     size_t n = strlen(buf), pos = n;
     int y = LINES - 1, accepted = -1;
     curs_set(1);
@@ -703,7 +697,7 @@ static int prompt_edit(const char *label, char *buf, size_t len,
             accepted = 0;
             break;
         case '\n': case '\r': case KEY_ENTER:
-            accepted = buf[0] != '\0';
+            accepted = accept_empty || buf[0] != '\0';
             break;
         case KEY_BACKSPACE: case 127: case KEY_CTRL('h'):
             while (pos > 0) {
@@ -758,6 +752,11 @@ static int prompt_edit(const char *label, char *buf, size_t len,
     }
     curs_set(0);
     return accepted;
+}
+
+static int prompt_edit(const char *label, char *buf, size_t len,
+                       prompt_completer complete) {
+    return prompt_edit_ex(label, buf, len, complete, 0);
 }
 
 static int confirm(const char *question) {
@@ -875,16 +874,545 @@ static int strip_trailing_slashes(char *path) {
 
 /* ---- actions ---- */
 
-static const char *mark_result_text(le_mark_result result) {
-    switch (result) {
-    case LE_MARK_REMOVED:  return "marked for removal";
-    case LE_MARK_UNMARKED: return "unmarked";
-    case LE_MARK_UNSTAGED: return "staged change undone";
-    default:               return "nothing to change";
-    }
+static int preview_page_rows(void) {
+    int h = LINES - 2;
+    return h < 1 ? 1 : h;
 }
 
-/* True, with the reason in the message bar, when Space would mark n in slot
+static void draw_preview(const char *path, const char *label, int truncated,
+                         preview_view *v, const char *status) {
+    erase();
+    char header[1024];
+    int off = str_append(header, sizeof(header), 0, " %s", path);
+    if (label && label[0]) {
+        off = str_append(header, sizeof(header), off, "  ");
+        off = str_append_safe(header, sizeof(header), off, label);
+    }
+    if (truncated)
+        str_append(header, sizeof(header), off, "  (truncated)");
+    draw_bar(0, header);
+
+    int page = preview_page_rows();
+    char line[4096];
+    for (int i = 0; i < page; i++) {
+        size_t row = v->top + (size_t)i;
+        if (row >= v->layout.nrows)
+            break;
+        size_t n = 0;
+        int hl_col = 0, hl_n = 0;
+        preview_row_render(&v->layout, row, v->match_off, v->match_len,
+                           v->has_match, line, sizeof(line), &n, &hl_col, &hl_n);
+        mvaddnstr(1 + i, 0, line, COLS);
+        if (hl_n > 0 && hl_col < COLS) {
+            attron(A_REVERSE);
+            mvaddnstr(1 + i, hl_col, line + hl_col, hl_n);
+            attroff(A_REVERSE);
+        }
+    }
+
+    char footer[1024];
+    if (status && status[0])
+        snprintf(footer, sizeof(footer), " %s", status);
+    else
+        snprintf(footer, sizeof(footer),
+                 " q close | / search | n next | j/k line | space page");
+    draw_bar(LINES - 1, footer);
+    refresh();
+}
+
+static void preview_apply_search(preview_view *v, const char *pattern,
+                                 int forward, char *status, size_t status_len) {
+    char err[256] = "";
+    int rc = preview_view_search(v, pattern, forward, 1, err, sizeof(err));
+    if (rc == -1)
+        strlcpy(status, err, status_len);
+    else if (rc == 1)
+        strlcpy(status, "Pattern not found", status_len);
+    else
+        status[0] = '\0';
+}
+
+static void preview_do_search(preview_view *v, int forward, char *last_pat,
+                              size_t last_len, int *last_fwd, char *status,
+                              size_t status_len) {
+    char pat[256] = "";
+    if (!prompt_edit_ex(forward ? "/" : "?", pat, sizeof(pat), NULL, 1)) {
+        status[0] = '\0';
+        return;
+    }
+    if (!pat[0]) {
+        if (!last_pat[0]) {
+            strlcpy(status, "no previous pattern", status_len);
+            return;
+        }
+        strlcpy(pat, last_pat, sizeof(pat));
+    } else {
+        strlcpy(last_pat, pat, last_len);
+    }
+    *last_fwd = forward;
+    preview_apply_search(v, pat, forward, status, status_len);
+}
+
+static void preview_search_again(preview_view *v, int reverse,
+                                 const char *last_pat, int last_fwd,
+                                 char *status, size_t status_len) {
+    if (!last_pat[0]) {
+        strlcpy(status, "no previous pattern", status_len);
+        return;
+    }
+    preview_apply_search(v, last_pat, reverse ? !last_fwd : last_fwd, status,
+                         status_len);
+}
+
+static void run_file_preview(const char *path, const char *label,
+                             le_member_bytes *bytes) {
+    preview_view view;
+    preview_view_init(&view, bytes->data, bytes->len);
+    char last_pat[256] = "";
+    int last_fwd = 1;
+    char status[256] = "";
+    for (;;) {
+        int page = preview_page_rows();
+        int width = COLS < 1 ? 1 : COLS;
+        if (view.layout.width != width)
+            preview_view_set_width(&view, width);
+        preview_view_move_line(&view, 0, page);
+        draw_preview(path, label, bytes->truncated, &view, status);
+
+        int ch = read_key();
+        if (ch == KEY_STOP)
+            break;
+        status[0] = '\0';
+        switch (ch) {
+        case KEY_DOWN:
+        case 'j':
+        case '\n':
+        case '\r':
+        case KEY_ENTER:
+            preview_view_move_line(&view, 1, page);
+            break;
+        case KEY_UP:
+        case 'k':
+            preview_view_move_line(&view, -1, page);
+            break;
+        case ' ':
+        case 'f':
+        case KEY_NPAGE:
+            preview_view_page(&view, 1, page);
+            break;
+        case 'b':
+        case KEY_PPAGE:
+            preview_view_page(&view, -1, page);
+            break;
+        case 'g':
+            preview_view_home(&view);
+            break;
+        case 'G':
+            preview_view_end(&view, page);
+            break;
+        case '/':
+            preview_do_search(&view, 1, last_pat, sizeof(last_pat), &last_fwd,
+                              status, sizeof(status));
+            break;
+        case '?':
+            preview_do_search(&view, 0, last_pat, sizeof(last_pat), &last_fwd,
+                              status, sizeof(status));
+            break;
+        case 'n':
+            preview_search_again(&view, 0, last_pat, last_fwd, status,
+                                 sizeof(status));
+            break;
+        case 'N':
+            preview_search_again(&view, 1, last_pat, last_fwd, status,
+                                 sizeof(status));
+            break;
+        case 'q':
+        case KEY_ESCAPE:
+            preview_view_free(&view);
+            return;
+        default:
+            break;
+        }
+    }
+    preview_view_free(&view);
+}
+
+static int side_page_rows(void) {
+    int h = LINES - 3;
+    return h < 1 ? 1 : h;
+}
+
+static int side_pair_at(const side_view *v, size_t disp, size_t *pair,
+                        int *wrap_i) {
+    size_t npair = v->diff ? v->diff->nrows : 0;
+    if (!npair || !v->pair_disp0 || disp >= v->ndisp)
+        return 0;
+    size_t lo = 0, hi = npair;
+    while (lo + 1 < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (v->pair_disp0[mid] <= disp)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    *pair = lo;
+    *wrap_i = (int)(disp - v->pair_disp0[lo]);
+    return 1;
+}
+
+static void draw_side_cell(int y, int x, int width, const char *text,
+                           int wrap_i, int color, int has_match,
+                           size_t match_off, size_t match_len) {
+    if (width < 1)
+        return;
+    preview_layout lay = {0};
+    const char *s = text ? text : "";
+    preview_layout_build(&lay, s, strlen(s), width);
+    char line[4096];
+    size_t n = 0;
+    int hl_col = 0, hl_n = 0;
+    if (wrap_i >= 0 && (size_t)wrap_i < lay.nrows)
+        preview_row_render(&lay, (size_t)wrap_i, match_off, match_len,
+                           has_match, line, sizeof(line), &n, &hl_col, &hl_n);
+    if (color && have_colors)
+        attron(COLOR_PAIR(color));
+    move(y, x);
+    int shown = (int)n;
+    if (shown > width)
+        shown = width;
+    if (shown > 0)
+        addnstr(line, shown);
+    for (int i = shown; i < width; i++)
+        addch(' ');
+    if (color && have_colors)
+        attroff(COLOR_PAIR(color));
+    if (hl_n > 0 && hl_col < width) {
+        int hn = hl_n;
+        if (hl_col + hn > width)
+            hn = width - hl_col;
+        if (hn > 0) {
+            attron(A_REVERSE);
+            mvaddnstr(y, x + hl_col, line + hl_col, hn);
+            attroff(A_REVERSE);
+        }
+    }
+    preview_layout_free(&lay);
+}
+
+static void draw_side_label(int y, int x, int width, const char *label) {
+    const char *s = label ? label : "";
+    attron(A_BOLD);
+    mvaddnstr(y, x, s, width);
+    int n = (int)strlen(s);
+    if (n > width)
+        n = width;
+    for (int i = n; i < width; i++)
+        mvaddch(y, x + i, ' ');
+    attroff(A_BOLD);
+}
+
+static void draw_side_preview(const char *path, const char *left_label,
+                              const char *right_label, int truncated,
+                              side_view *v, const char *status) {
+    erase();
+    char header[1024];
+    int off = str_append(header, sizeof(header), 0, " %s", path);
+    if (truncated)
+        str_append(header, sizeof(header), off, "  (truncated)");
+    draw_bar(0, header);
+    draw_side_label(1, 0, v->left_width, left_label);
+    mvaddch(1, v->left_width, '|');
+    draw_side_label(1, v->left_width + 1, v->right_width, right_label);
+
+    int page = side_page_rows();
+    for (int i = 0; i < page; i++) {
+        size_t disp = v->top + (size_t)i;
+        size_t pair = 0;
+        int wrap_i = 0;
+        int y = 2 + i;
+        if (!side_pair_at(v, disp, &pair, &wrap_i))
+            break;
+        const side_row *row = &v->diff->rows[pair];
+        int left_color = 0, right_color = 0;
+        if (row->kind == SIDE_DEL || row->kind == SIDE_CHG)
+            left_color = PAIR_WHITEOUT;
+        if (row->kind == SIDE_INS || row->kind == SIDE_CHG)
+            right_color = PAIR_SHARED;
+        int hit_left = v->has_match && v->match_pair == pair &&
+                       v->match_side == 0;
+        int hit_right = v->has_match && v->match_pair == pair &&
+                        v->match_side == 1;
+        draw_side_cell(y, 0, v->left_width, row->left, wrap_i, left_color,
+                       hit_left, v->match_off, v->match_len);
+        mvaddch(y, v->left_width, '|');
+        draw_side_cell(y, v->left_width + 1, v->right_width, row->right, wrap_i,
+                       right_color, hit_right, v->match_off, v->match_len);
+    }
+
+    char footer[1024];
+    if (status && status[0])
+        snprintf(footer, sizeof(footer), " %s", status);
+    else
+        snprintf(footer, sizeof(footer),
+                 " q close | / search | n next | j/k line | space page");
+    draw_bar(LINES - 1, footer);
+    refresh();
+}
+
+static void side_apply_search(side_view *v, const char *pattern, int forward,
+                              char *status, size_t status_len) {
+    char err[256] = "";
+    int rc = side_view_search(v, pattern, forward, 1, err, sizeof(err));
+    if (rc == -1)
+        strlcpy(status, err, status_len);
+    else if (rc == 1)
+        strlcpy(status, "Pattern not found", status_len);
+    else
+        status[0] = '\0';
+}
+
+static void side_do_search(side_view *v, int forward, char *last_pat,
+                          size_t last_len, int *last_fwd, char *status,
+                          size_t status_len) {
+    char pat[256] = "";
+    if (!prompt_edit_ex(forward ? "/" : "?", pat, sizeof(pat), NULL, 1)) {
+        status[0] = '\0';
+        return;
+    }
+    if (!pat[0]) {
+        if (!last_pat[0]) {
+            strlcpy(status, "no previous pattern", status_len);
+            return;
+        }
+        strlcpy(pat, last_pat, sizeof(pat));
+    } else {
+        strlcpy(last_pat, pat, last_len);
+    }
+    *last_fwd = forward;
+    side_apply_search(v, pat, forward, status, status_len);
+}
+
+static void side_search_again(side_view *v, int reverse, const char *last_pat,
+                              int last_fwd, char *status, size_t status_len) {
+    if (!last_pat[0]) {
+        strlcpy(status, "no previous pattern", status_len);
+        return;
+    }
+    side_apply_search(v, last_pat, reverse ? !last_fwd : last_fwd, status,
+                      status_len);
+}
+
+static void run_side_preview(const char *path, const char *left_label,
+                             const char *right_label, int truncated,
+                             side_diff *diff) {
+    side_view view;
+    side_view_init(&view, diff);
+    char last_pat[256] = "";
+    int last_fwd = 1;
+    char status[256] = "";
+    for (;;) {
+        int page = side_page_rows();
+        int width = COLS < 1 ? 1 : COLS;
+        if (view.total_cols != width)
+            side_view_set_width(&view, width);
+        side_view_move_line(&view, 0, page);
+        draw_side_preview(path, left_label, right_label, truncated, &view,
+                          status);
+
+        int ch = read_key();
+        if (ch == KEY_STOP)
+            break;
+        status[0] = '\0';
+        switch (ch) {
+        case KEY_DOWN:
+        case 'j':
+        case '\n':
+        case '\r':
+        case KEY_ENTER:
+            side_view_move_line(&view, 1, page);
+            break;
+        case KEY_UP:
+        case 'k':
+            side_view_move_line(&view, -1, page);
+            break;
+        case ' ':
+        case 'f':
+        case KEY_NPAGE:
+            side_view_page(&view, 1, page);
+            break;
+        case 'b':
+        case KEY_PPAGE:
+            side_view_page(&view, -1, page);
+            break;
+        case 'g':
+            side_view_home(&view);
+            break;
+        case 'G':
+            side_view_end(&view, page);
+            break;
+        case '/':
+            side_do_search(&view, 1, last_pat, sizeof(last_pat), &last_fwd,
+                           status, sizeof(status));
+            break;
+        case '?':
+            side_do_search(&view, 0, last_pat, sizeof(last_pat), &last_fwd,
+                           status, sizeof(status));
+            break;
+        case 'n':
+            side_search_again(&view, 0, last_pat, last_fwd, status,
+                              sizeof(status));
+            break;
+        case 'N':
+            side_search_again(&view, 1, last_pat, last_fwd, status,
+                              sizeof(status));
+            break;
+        case 'q':
+        case KEY_ESCAPE:
+            side_view_free(&view);
+            return;
+        default:
+            break;
+        }
+    }
+    side_view_free(&view);
+}
+
+static int load_preview_bytes(tui_state *st, const le_node *n, int slot,
+                              const char *path, le_member_bytes *out,
+                              char *err, size_t errlen) {
+    const le_staged *s = n->arch[slot].staged;
+    if (s) {
+        if (s->source == LE_STAGED_WHITEOUT) {
+            le_seterr(err, errlen, "cannot preview a whiteout");
+            return -1;
+        }
+        if (!s->host_path) {
+            le_seterr(err, errlen, "staged file has no host path");
+            return -1;
+        }
+        return member_read_from_host(s->host_path, MEMBER_PREVIEW_MAX, out, err,
+                                     errlen);
+    }
+    return store_read_member(session_store(st->sess, slot), path, out, err,
+                             errlen);
+}
+
+static void action_preview(tui_state *st, le_node *n) {
+    const char *block_reason = preview_block_reason(n);
+    if (block_reason) {
+        set_msg(st, "%s", block_reason);
+        return;
+    }
+    int slots[LE_MAX_ARCHIVES];
+    int nslots = node_archives(n, st->m->narchives, slots);
+    if (nslots == 0) {
+        set_msg(st, "not present in any archive");
+        return;
+    }
+    int slot = slots[0];
+    if (preview_needs_archive_choice(n, nslots)) {
+        slot = prompt_archive(st, "Preview which archive", slots, nslots, 0);
+        if (slot == PICK_CANCEL) {
+            set_msg(st, "cancelled");
+            return;
+        }
+    }
+    char path[PATH_MAX];
+    if (node_path(n, path, sizeof(path)) == -1) {
+        set_msg(st, "path too deep");
+        return;
+    }
+    le_member_bytes bytes = {0};
+    char err[512] = "";
+    if (load_preview_bytes(st, n, slot, path, &bytes, err, sizeof(err)) != 0) {
+        set_msg(st, "%s", err);
+        return;
+    }
+    if (member_bytes_is_binary(&bytes)) {
+        member_bytes_free(&bytes);
+        set_msg(st, "binary file; not shown");
+        return;
+    }
+    run_file_preview(path, session_label(st->sess, slot), &bytes);
+    member_bytes_free(&bytes);
+}
+
+static int pick_diff_slots(tui_state *st, const int *slots, int nslots,
+                           int *left, int *right) {
+    if (nslots == 2) {
+        *left = slots[0];
+        *right = slots[1];
+        return 1;
+    }
+    int first = prompt_archive(st, "Diff left archive", slots, nslots, 0);
+    if (first == PICK_CANCEL)
+        return 0;
+    int rest[LE_MAX_ARCHIVES], nrest = 0;
+    for (int i = 0; i < nslots; i++)
+        if (slots[i] != first)
+            rest[nrest++] = slots[i];
+    int second = prompt_archive(st, "Diff right archive", rest, nrest, 0);
+    if (second == PICK_CANCEL)
+        return 0;
+    *left = first;
+    *right = second;
+    return 1;
+}
+
+static void action_diff(tui_state *st, le_node *n) {
+    int slots[LE_MAX_ARCHIVES];
+    int nslots = node_archives(n, st->m->narchives, slots);
+    const char *block = preview_diff_block(n, nslots);
+    if (block) {
+        set_msg(st, "%s", block);
+        return;
+    }
+    int left, right;
+    if (!pick_diff_slots(st, slots, nslots, &left, &right)) {
+        set_msg(st, "cancelled");
+        return;
+    }
+    char path[PATH_MAX];
+    if (node_path(n, path, sizeof(path)) == -1) {
+        set_msg(st, "path too deep");
+        return;
+    }
+    le_member_bytes a = {0}, b = {0};
+    char err[512] = "";
+    if (load_preview_bytes(st, n, left, path, &a, err, sizeof(err)) != 0) {
+        set_msg(st, "%s", err);
+        return;
+    }
+    if (load_preview_bytes(st, n, right, path, &b, err, sizeof(err)) != 0) {
+        member_bytes_free(&a);
+        set_msg(st, "%s", err);
+        return;
+    }
+    if (member_bytes_is_binary(&a) || member_bytes_is_binary(&b)) {
+        member_bytes_free(&a);
+        member_bytes_free(&b);
+        set_msg(st, "binary file; not shown");
+        return;
+    }
+    int truncated = a.truncated || b.truncated;
+    side_diff diff = {0};
+    int rc = side_diff_build(a.data, a.len, b.data, b.len, &diff);
+    member_bytes_free(&a);
+    member_bytes_free(&b);
+    if (rc == SIDE_DIFF_IDENTICAL) {
+        set_msg(st, "files are identical");
+        return;
+    }
+    if (rc != SIDE_DIFF_OK) {
+        set_msg(st, "out of memory");
+        return;
+    }
+    run_side_preview(path, session_label(st->sess, left),
+                     session_label(st->sess, right), truncated, &diff);
+    side_diff_free(&diff);
+}
+
+/* True, with the reason in the message bar, when x would drop n in slot
  * and the slot's store does not allow that. */
 static int store_blocks_mark(tui_state *st, const le_node *n, int slot) {
     const le_arch_state *state = &n->arch[slot];
@@ -898,39 +1426,176 @@ static int store_blocks_mark(tui_state *st, const le_node *n, int slot) {
     return 1;
 }
 
-static void action_toggle_mark(tui_state *st, le_node *n) {
+static int slot_is_staged(const le_node *n, int slot) {
+    return n->arch[slot].staged != NULL;
+}
+
+static int slot_is_inherited_drop(const le_node *n, int slot) {
+    return !n->arch[slot].removed && node_drop_parent(n, slot) != NULL;
+}
+
+static int staged_is_whiteout(const le_node *n, int slot) {
+    return n->arch[slot].staged &&
+           n->arch[slot].staged->source == LE_STAGED_WHITEOUT;
+}
+
+static void set_action_msg(tui_state *st, const char *text, int pick,
+                           int nslots) {
+    if (pick == PICK_ALL)
+        set_msg(st, "%s in all %d archives", text, nslots);
+    else if (pick >= 0)
+        set_msg(st, "%s in %s", text, session_label(st->sess, pick));
+    else
+        set_msg(st, "%s", text);
+}
+
+static void msg_inherited_drop(tui_state *st, const le_node *n, int slot) {
+    const le_node *parent = node_drop_parent(n, slot);
+    char path[PATH_MAX] = "";
+    if (parent)
+        node_path(parent, path, sizeof(path));
+    if (path[0])
+        set_msg(st, "dropped with parent %s; press u on the parent to keep it",
+                path);
+    else
+        set_msg(st, "dropped with parent; press u on the parent to keep it");
+}
+
+static void action_drop(tui_state *st, le_node *n) {
     int slots[LE_MAX_ARCHIVES];
     int nslots = node_archives(n, st->m->narchives, slots);
     if (nslots == 0) {
         set_msg(st, "not present in any archive");
         return;
     }
-    if (nslots == 1) {
-        if (store_blocks_mark(st, n, slots[0]))
+    int pick;
+    if (nslots == 1)
+        pick = slots[0];
+    else {
+        pick = prompt_archive(st, "Drop from", slots, nslots, 1);
+        if (pick == PICK_CANCEL) {
+            set_msg(st, "cancelled");
             return;
-        le_mark_result result = model_toggle_mark(st->m, n, slots[0]);
-        rebuild_rows(st);
-        set_msg(st, "%s", mark_result_text(result));
+        }
+    }
+
+    int apply[LE_MAX_ARCHIVES], napply = 0;
+    for (int i = 0; i < nslots; i++)
+        if (pick == PICK_ALL || pick == slots[i])
+            apply[napply++] = slots[i];
+
+    int nstaged = 0, nwhiteout = 0, ninherit = 0, ndrop = 0;
+    int drop_slots[LE_MAX_ARCHIVES];
+    int inherit_slot = -1;
+    for (int i = 0; i < napply; i++) {
+        int s = apply[i];
+        if (slot_is_staged(n, s)) {
+            nstaged++;
+            if (staged_is_whiteout(n, s))
+                nwhiteout++;
+            continue;
+        }
+        if (slot_is_inherited_drop(n, s)) {
+            ninherit++;
+            if (inherit_slot < 0)
+                inherit_slot = s;
+            continue;
+        }
+        if (n->arch[s].present)
+            drop_slots[ndrop++] = s;
+    }
+
+    if (ndrop == 0) {
+        if (nstaged)
+            set_msg(st, nwhiteout == nstaged
+                            ? "press u to cancel this whiteout"
+                            : "press u to cancel this add");
+        else if (ninherit)
+            msg_inherited_drop(st, n, inherit_slot);
+        else
+            set_msg(st, "nothing to change");
         return;
     }
 
-    int pick = prompt_archive(st, "Space applies to", slots, nslots, 1);
-    if (pick == PICK_CANCEL) {
-        set_msg(st, "cancelled");
+    for (int i = 0; i < ndrop; i++)
+        if (store_blocks_mark(st, n, drop_slots[i]))
+            return;
+
+    int want_remove = 1;
+    for (int i = 0; i < ndrop; i++)
+        if (n->arch[drop_slots[i]].removed) {
+            want_remove = 0;
+            break;
+        }
+    for (int i = 0; i < ndrop; i++)
+        if (!!n->arch[drop_slots[i]].removed != want_remove)
+            model_toggle_removed(st->m, n, drop_slots[i]);
+
+    rebuild_rows(st);
+    set_action_msg(st, want_remove ? "will drop from the layer on save"
+                                   : "kept in the layer",
+                   nslots == 1 ? -1 : pick, nslots);
+}
+
+static void action_undo(tui_state *st, le_node *n) {
+    int undo_slots[LE_MAX_ARCHIVES], nundo = 0;
+    for (int i = 0; i < st->m->narchives; i++)
+        if (n->arch[i].staged || n->arch[i].removed)
+            undo_slots[nundo++] = i;
+    if (nundo == 0) {
+        int inherit = -1;
+        for (int i = 0; i < st->m->narchives; i++)
+            if (slot_is_inherited_drop(n, i)) {
+                inherit = i;
+                break;
+            }
+        if (inherit >= 0)
+            msg_inherited_drop(st, n, inherit);
+        else
+            set_msg(st, "press x to drop this path from the layer");
         return;
     }
-    for (int i = 0; i < nslots; i++)
-        if ((pick == PICK_ALL || pick == slots[i]) &&
-            store_blocks_mark(st, n, slots[i]))
+    int pick;
+    if (nundo == 1)
+        pick = undo_slots[0];
+    else {
+        pick = prompt_archive(st, "Undo in", undo_slots, nundo, 1);
+        if (pick == PICK_CANCEL) {
+            set_msg(st, "cancelled");
             return;
-    le_mark_result result = pick == PICK_ALL ? model_toggle_mark_all(st->m, n)
-                                             : model_toggle_mark(st->m, n, pick);
+        }
+    }
+
+    int do_slots[LE_MAX_ARCHIVES], ndo = 0;
+    if (pick == PICK_ALL) {
+        for (int i = 0; i < nundo; i++)
+            do_slots[ndo++] = undo_slots[i];
+    } else {
+        do_slots[ndo++] = pick;
+    }
+
+    int undid_drop = 0, undid_stage = 0, undid_wh = 0;
+    for (int i = 0; i < ndo; i++) {
+        int s = do_slots[i];
+        if (slot_is_staged(n, s)) {
+            undid_stage++;
+            if (staged_is_whiteout(n, s))
+                undid_wh++;
+        } else {
+            undid_drop++;
+        }
+        model_undo(st->m, n, s);
+    }
     rebuild_rows(st);
-    if (pick == PICK_ALL)
-        set_msg(st, "%s in all %d archives", mark_result_text(result), nslots);
+    const char *text;
+    if (undid_stage && !undid_drop)
+        text = undid_wh == undid_stage ? "staged whiteout cancelled"
+                                       : "staged add cancelled";
+    else if (undid_drop && !undid_stage)
+        text = "kept in the layer";
     else
-        set_msg(st, "%s in %s", mark_result_text(result),
-                session_label(st->sess, pick));
+        text = "undone";
+    set_action_msg(st, text, nundo == 1 ? -1 : pick, nundo);
 }
 
 static int parse_owner(const char *text, uid_t *uid, gid_t *gid) {
@@ -1244,9 +1909,23 @@ int tui_run(const le_session *sess, le_model *m) {
                 move_to_parent(&st);
             }
             break;
-        case ' ':
+        case '\n':
+        case '\r':
+        case KEY_ENTER:
             if (cur)
-                action_toggle_mark(&st, cur);
+                action_preview(&st, cur);
+            break;
+        case 'd':
+            if (cur)
+                action_diff(&st, cur);
+            break;
+        case 'x':
+            if (cur)
+                action_drop(&st, cur);
+            break;
+        case 'u':
+            if (cur)
+                action_undo(&st, cur);
             break;
         case 'a':
             action_add(&st, cur);

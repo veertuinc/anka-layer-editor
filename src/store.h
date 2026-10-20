@@ -1,6 +1,8 @@
 #pragma once
 
+#include "member_read.h"
 #include "tree.h"
+#include "util.h"
 
 #include <stddef.h>
 
@@ -21,7 +23,7 @@ typedef struct {
      * NULL. 0, or -1 with err set. */
     int  (*save)(le_store *store, le_model *m, int arch_idx,
                  const char *save_name, char *err, size_t errlen);
-    /* Optional. 0 when Space may mark n for removal, else -1 with err set. */
+    /* Optional. 0 when x may drop n from the layer, else -1 with err set. */
     int  (*may_remove)(const le_store *store, const le_node *n, int arch_idx,
                        char *err, size_t errlen);
     /* Optional. Fill question with a yes/no question to ask before save.
@@ -35,6 +37,10 @@ typedef struct {
     /* Optional. 0 when name can be used for save, else -1 with err set. */
     int  (*check_save_name)(const le_store *store, const char *name,
                             char *err, size_t errlen);
+    /* Optional. Read guest_path's regular-file payload into out (caller
+     * frees). 0, or -1 with err set. */
+    int  (*read_member)(const le_store *store, const char *guest_path,
+                        le_member_bytes *out, char *err, size_t errlen);
     void (*free)(le_store *store);
 } le_store_ops;
 
@@ -82,6 +88,17 @@ static inline int store_check_save_name(const le_store *store, const char *name,
     return store->ops->check_save_name
                ? store->ops->check_save_name(store, name, err, errlen)
                : 0;
+}
+
+static inline int store_read_member(const le_store *store,
+                                    const char *guest_path,
+                                    le_member_bytes *out, char *err,
+                                    size_t errlen) {
+    if (!store->ops->read_member) {
+        le_seterr(err, errlen, "this store cannot preview files");
+        return -1;
+    }
+    return store->ops->read_member(store, guest_path, out, err, errlen);
 }
 
 static inline void store_free(le_store *store) {

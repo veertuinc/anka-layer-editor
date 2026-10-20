@@ -240,7 +240,7 @@ static void test_unstage_restores_and_prunes(const char *dir) {
 
     le_node *orig = stage_host(m, "a/orig.txt", 0, host);
     EXPECT(orig && node_display_meta(orig, 1)->size == 30, "shows staged size");
-    EXPECT(model_toggle_mark(m, orig, 0) == LE_MARK_UNSTAGED, "space unstages");
+    EXPECT(model_toggle_mark(m, orig, 0) == LE_MARK_UNSTAGED, "toggle_mark unstages");
     orig = model_lookup(m, "a/orig.txt");
     EXPECT(orig && node_display_meta(orig, 1)->size == 4 && !orig->arch[0].removed,
            "original entry is back and not marked");
@@ -254,7 +254,7 @@ static void test_unstage_restores_and_prunes(const char *dir) {
     le_node *whiteout = model_stage_whiteout(m, "a/gone", 0, 0, err, sizeof(err));
     EXPECT(whiteout != NULL, "stage whiteout: %s", err);
     EXPECT(model_toggle_mark(m, whiteout, 0) == LE_MARK_UNSTAGED,
-           "space unstages a whiteout");
+           "toggle_mark unstages a whiteout");
     EXPECT(model_lookup(m, "a/.wh.gone") == NULL, "whiteout node gone");
     EXPECT(m->total == total_before, "total back to %zu, got %zu", total_before,
            m->total);
@@ -263,7 +263,7 @@ static void test_unstage_restores_and_prunes(const char *dir) {
     EXPECT(whiteout && model_lookup(m, "a/orig.txt")->arch[0].removed,
            "whiteout of a layer file marks it: %s", err);
     EXPECT(model_toggle_mark(m, whiteout, 0) == LE_MARK_UNSTAGED,
-           "space unstages the whiteout");
+           "toggle_mark unstages the whiteout");
     EXPECT(!model_lookup(m, "a/orig.txt")->arch[0].removed && m->marked == 0,
            "undoing the whiteout unmarks the file it marked");
 
@@ -600,6 +600,80 @@ static void test_write_byte_mismatch_fails(const char *dir) {
     unlink(archive);
 }
 
+static le_meta test_file_meta(void) {
+    le_meta meta;
+    memset(&meta, 0, sizeof(meta));
+    meta.kind = LE_KIND_FILE;
+    meta.mode = S_IFREG | 0644;
+    return meta;
+}
+
+static void test_archive_slot_char(const char *dir) {
+    le_meta meta = test_file_meta();
+    le_model *m = model_new(2);
+    le_node *tool = model_insert(m, "usr/bin/tool", 0, &meta, LE_CHANGE_ADDED);
+    model_insert(m, "usr/bin/tool", 1, &meta, LE_CHANGE_ADDED);
+    le_node *only = model_insert(m, "usr/only-a.txt", 0, &meta, LE_CHANGE_ADDED);
+
+    EXPECT(node_archive_slot_char(tool, 0) == '1', "present in 0");
+    EXPECT(node_archive_slot_char(tool, 1) == '2', "present in 1");
+    EXPECT(node_archive_slot_char(only, 1) == '.', "absent from 1");
+
+    model_toggle_removed(m, tool, 0);
+    EXPECT(node_archive_slot_char(tool, 0) == 'X', "explicit drop");
+    EXPECT(node_archive_slot_char(tool, 1) == '2', "other archive kept");
+    model_toggle_removed(m, tool, 0);
+
+    le_node *bin = model_lookup(m, "usr/bin");
+    model_toggle_removed(m, bin, 0);
+    EXPECT(!tool->arch[0].removed, "child not explicitly marked");
+    EXPECT(node_archive_slot_char(tool, 0) == 'X', "inherited drop");
+    EXPECT(node_drop_parent(tool, 0) == bin, "drop parent is bin");
+    EXPECT(node_drop_parent(tool, 1) == NULL, "no drop parent in 1");
+    model_toggle_removed(m, bin, 0);
+
+    char host[512];
+    snprintf(host, sizeof(host), "%s/slot-host.txt", dir);
+    EXPECT(write_host_file(host, "staged") == 0, "write");
+    le_node *added = stage_host(m, "usr/NOTES.md", 1, host);
+    EXPECT(added && node_archive_slot_char(added, 1) == '+', "staged slot");
+    EXPECT(node_archive_slot_char(added, 0) == '.', "not in 0");
+    model_free(m);
+}
+
+static void test_undo_clears_drop(const char *dir) {
+    le_meta meta = test_file_meta();
+    le_model *m = model_new(2);
+    le_node *tool = model_insert(m, "usr/bin/tool", 0, &meta, LE_CHANGE_ADDED);
+    model_insert(m, "usr/bin/tool", 1, &meta, LE_CHANGE_ADDED);
+
+    model_toggle_removed(m, tool, 0);
+    EXPECT(node_archive_slot_char(tool, 0) == 'X', "dropped");
+    EXPECT(model_undo(m, tool, 0) == LE_MARK_UNMARKED, "u clears the drop");
+    EXPECT(node_archive_slot_char(tool, 0) == '1', "kept again");
+    EXPECT(node_archive_slot_char(tool, 1) == '2', "other archive untouched");
+    EXPECT(!model_dirty(m), "drop then undo is clean");
+
+    le_node *bin = model_lookup(m, "usr/bin");
+    model_toggle_removed(m, bin, 0);
+    EXPECT(node_archive_slot_char(tool, 0) == 'X', "inherited drop");
+    EXPECT(model_undo(m, tool, 0) == LE_MARK_NONE,
+           "u on a child does not clear a parent drop");
+    EXPECT(tool->arch[0].removed == 0, "child still has no explicit drop");
+    EXPECT(node_archive_slot_char(tool, 0) == 'X', "still dropped with parent");
+    EXPECT(model_undo(m, bin, 0) == LE_MARK_UNMARKED, "u on parent keeps subtree");
+    EXPECT(node_archive_slot_char(tool, 0) == '1', "child kept after parent undo");
+
+    char host[512];
+    snprintf(host, sizeof(host), "%s/undo-host.txt", dir);
+    EXPECT(write_host_file(host, "x") == 0, "write");
+    le_node *added = stage_host(m, "usr/NEW.txt", 0, host);
+    EXPECT(added && model_undo(m, added, 0) == LE_MARK_UNSTAGED,
+           "u cancels a staged add");
+    EXPECT(model_lookup(m, "usr/NEW.txt") == NULL, "staged node gone");
+    model_free(m);
+}
+
 int main(void) {
     char *dir = make_tmpdir();
     if (!dir) {
@@ -628,6 +702,8 @@ int main(void) {
     test_unstage_restores_and_prunes(dir);
     test_added_entries_change_kind(dir);
     test_default_owner(dir);
+    test_archive_slot_char(dir);
+    test_undo_clears_drop(dir);
 
     /* Best-effort cleanup of temp dir contents is optional; leave for OS. */
     if (test_failures) {

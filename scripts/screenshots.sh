@@ -44,6 +44,16 @@ send_keys() {
     sleep 0.05
 }
 
+type_text() {
+    tmux send-keys -t "$session" -l "$1"
+    sleep 0.05
+}
+
+clear_prompt() {
+    tmux send-keys -t "$session" C-u
+    sleep 0.05
+}
+
 shot() {
     dest=$1
     sleep 0.15
@@ -56,30 +66,99 @@ start_editor() {
     tmux -f /dev/null new-session -d -s "$session" -x 100 -y 32 "$@"
 }
 
+start_sample() {
+    start_editor "$root/anka-oci-tag-editor" \
+        "$root/testdata/pkg-cmake.tar.gz" "$root/testdata/pkg-jq.tar.gz"
+    wait_for_text "anka-oci-tag-editor"
+}
+
+expand_local() {
+    send_keys l
+    send_keys l
+    send_keys l
+}
+
 make build
 
-start_editor "$root/anka-oci-tag-editor" \
-    "$root/testdata/pkg-cmake.tar.gz" "$root/testdata/pkg-jq.tar.gz"
-wait_for_text "anka-oci-tag-editor"
-send_keys l
-send_keys l
-send_keys l
+start_sample
+expand_local
 shot "$out/tree.png"
 
-start_editor "$root/anka-oci-tag-editor" \
-    "$root/testdata/pkg-cmake.tar.gz" "$root/testdata/pkg-jq.tar.gz"
-wait_for_text "anka-oci-tag-editor"
+start_sample
+send_keys "/"
+wait_for_text "Filter (empty clears)"
+type_text "cmake"
+send_keys Enter
+wait_for_text 'filter: "cmake"'
+send_keys G
+shot "$out/filter.png"
+
+start_sample
 for key in l l l j j j j j j; do
     send_keys "$key"
 done
-send_keys " "
+send_keys "x"
+send_keys "1"
 shot "$out/marked.png"
 
-start_editor "$root/anka-oci-tag-editor" \
-    "$root/testdata/pkg-cmake.tar.gz" "$root/testdata/pkg-jq.tar.gz"
-wait_for_text "anka-oci-tag-editor"
+start_sample
+send_keys w
+wait_for_text "Whiteout - path"
+clear_prompt
+type_text "usr/local/bin/oldtool"
+send_keys Enter
+wait_for_text "Whiteout in which archive"
+send_keys "1"
+wait_for_text "staged whiteout"
+send_keys j
+shot "$out/whiteout.png"
+
+start_sample
+expand_local
+send_keys a
+wait_for_text "Add - host file"
+type_text "$root/testdata/README.md"
+send_keys Enter
+wait_for_text "Add - destination"
+clear_prompt
+type_text "usr/local/NOTES.md"
+send_keys Enter
+wait_for_text "Add to which archive"
+send_keys "1"
+wait_for_text "Add - owner"
+send_keys Enter
+wait_for_text "staged in"
+shot "$out/staged.png"
+
+start_sample
 send_keys "?"
 shot "$out/help.png"
+
+start_sample
+send_keys "/"
+wait_for_text "Filter (empty clears)"
+type_text "README.md"
+send_keys Enter
+wait_for_text "README.md"
+send_keys j
+send_keys j
+send_keys Enter
+wait_for_text "Preview which archive"
+send_keys "1"
+wait_for_text "q close"
+shot "$out/preview.png"
+
+start_sample
+send_keys "/"
+wait_for_text "Filter (empty clears)"
+type_text "README.md"
+send_keys Enter
+wait_for_text "README.md"
+send_keys j
+send_keys j
+send_keys d
+wait_for_text "q close"
+shot "$out/diff.png"
 
 fake_state=$(mktemp -d "${TMPDIR:-/tmp}/oci-tag-editor-shots.XXXXXX")
 printf 'stopped\n' >"$fake_state/status"

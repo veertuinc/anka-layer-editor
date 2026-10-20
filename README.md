@@ -6,11 +6,13 @@
 filesystem-layer archives (`.tar.gz`) before you import/push them. It lets you:
 
 - Navigate the archive hierarchy, expanding and collapsing directories.
-- Mark files or whole subtrees for removal from the archive.
+- Open a file and preview its contents with `less`-like keys (no `$LESS`).
+- Diff a text file across two archives that hold it (`d`; side-by-side, in-TUI).
+- Drop files or whole subtrees from the archive (`x`).
 - Add files from the host machine at a chosen path inside the archive.
 - See whiteout (`.wh.`) entries, and stage new whiteouts that delete a path from the
   base image when Anka applies the layer.
-- Undo a staged addition or whiteout before you save.
+- Undo a drop, or cancel a staged addition or whiteout, before you save (`u`).
 - Save the edited archive back in place (atomically), with the Anka change kind,
   owners, permissions, hard links, and pax records of kept entries unchanged.
 - Open several layers at once (up to 8) and see which of them hold each path.
@@ -27,13 +29,33 @@ The file tree of two layers. Yellow rows are paths that both layers hold.
 
 ![File tree of two layers](screenshots/tree.png)
 
-A file marked for removal. `X` is the mark.
+A filter for `cmake`. Matching branches stay in the tree. The status bar shows the filter.
 
-![A marked file](screenshots/marked.png)
+![Filter for cmake](screenshots/filter.png)
+
+A file dropped from the first archive. `X` replaces that archive's number.
+
+![A dropped file](screenshots/marked.png)
+
+A staged whiteout. `[wh]` (rose) deletes that path from the base image.
+
+![A staged whiteout](screenshots/whiteout.png)
+
+A host file staged into the archive. `[+]` is not saved yet.
+
+![A staged host file](screenshots/staged.png)
 
 The help overlay.
 
 ![Help overlay](screenshots/help.png)
+
+Enter on a file opens a pager. `q` closes it.
+
+![File preview](screenshots/preview.png)
+
+`d` on a text file that two archives hold opens a side-by-side diff. Both sides stay on the same lines as you scroll.
+
+![File diff](screenshots/diff.png)
 
 VM mode on a stopped VM. The header shows the current OCI tag.
 
@@ -114,7 +136,10 @@ anka-oci-tag-editor --vm <name> [--tag <tag>]
 | Left / `h` | Collapse directory (or jump to parent) |
 | PgUp / PgDn | Page up / down |
 | `g` / `G` | Jump to top / bottom |
-| `Space` | Toggle mark-for-removal on the selected file or subtree. On a staged item, undo it |
+| Enter | Open the selected file in a pager (`j`/`k`, arrows, Space/`b`, `g`/`G`, `/` `?` `n` `N`, `q`) |
+| `d` | Side-by-side diff of the selected text file in two archives that hold it |
+| `x` | Drop the selected file or subtree from the layer on save (toggles `X`) |
+| `u` | Undo a drop (`X`), or cancel a staged add or whiteout |
 | `a` | Add a host file: prompts for the host path, the destination in the archive, and the owner |
 | `w` | Stage a whiteout: prompts for the path to delete from the base image |
 | `/` | Filter by substring (shows matching branches; an empty filter clears it) |
@@ -128,7 +153,8 @@ the current filter, and the owner of the nearest entry above the destination.
 
 Row markers:
 
-- `X` is marked for removal, `~` is removed because a parent is marked.
+- `X` will drop from the layer on save (this row, or a parent). With several
+  archives it replaces that archive's number in the membership column (`[X2]`).
 - `[+]` is staged and not saved yet.
 - `[wh]` (red) is a whiteout, with the name it deletes.
 - `a -> b` is a symlink, `a => b` is a hard link.
@@ -136,12 +162,12 @@ Row markers:
 The line above the status bar shows the selected path in full, the archives that
 hold it, its mode, and its owner. After each archive name, the parentheses show
 the Anka change kind (added, modified, or whiteout) and your edits (staged,
-marked, or removed via parent). An archive with no change kind and no edit shows
+dropped, or dropped with parent). An archive with no change kind and no edit shows
 only its name. With one archive open, the line shows only the state:
 
 ```text
  usr/local   in pkg-cmake.tar.gz, pkg-jq.tar.gz   mode 0755   owner 501:20
- usr/local/README.md   in pkg-cmake.tar.gz (marked), pkg-jq.tar.gz   mode 0644   owner 501:20
+ usr/local/README.md   in pkg-cmake.tar.gz (dropped), pkg-jq.tar.gz   mode 0644   owner 501:20
 ```
 
 ## Whiteouts
@@ -159,10 +185,10 @@ X         tool   (10B)
 
 - Press `w` and type the path to delete. End the path with `/` to delete a directory.
   Anka removes a directory only when it is empty in the base image.
-- If the layer also holds the path you delete, the editor marks that copy for removal,
+- If the layer also holds the path you delete, the editor drops that copy,
   because a layer must not add and delete the same path. If the path was a staged
-  addition, the addition is undone.
-- Press `Space` on a staged whiteout to undo it. A mark that the whiteout set is
+  addition, the addition is cancelled.
+- Press `u` on a staged whiteout to cancel it. A drop that the whiteout set is
   cleared too.
 - The editor writes a new whiteout as an empty entry with change kind 4 (whiteout),
   the same as `anka export --layer`.
@@ -173,9 +199,9 @@ Limits:
 
 - If a whiteout undoes a staged addition, undoing the whiteout does not stage the
   addition again. Use `a` to add the host file again.
-- The editor records that a whiteout marked its target. If you unmark the target and
-  mark it again while the whiteout is staged, undoing the whiteout still clears that
-  mark. Press `Space` on the target to mark it again.
+- The editor records that a whiteout dropped its target. If you keep the target and
+  drop it again while the whiteout is staged, cancelling the whiteout still clears that
+  drop. Press `x` on the target to drop it again.
 
 ## Comparing several layers
 
@@ -191,7 +217,7 @@ Tiny Homebrew-style fixtures for trying this live are in [`testdata/`](testdata/
 Every path appears once, and a membership column shows which archives hold it:
 
 ```
-X [12]  v etc/          both archives contain etc/
+  [X2]  v etc/          drop from the first archive; both contain etc/
   [1.]    > opt/        only the first archive
   [.2]    > var/        only the second archive
   [.+]      added.txt   staged into the second archive, not saved yet
@@ -205,8 +231,8 @@ Paths are matched by name only; file contents are never hashed or compared.
 
 Edits stay scoped to an archive:
 
-- `Space` on a path held by one archive marks it there directly. On a shared path it
-  asks which archive to mark, or `a` for all of them.
+- `x` on a path held by one archive drops it there directly. On a shared path it
+  asks which archive to drop from, or `a` for all of them.
 - `a` asks which archive receives the new file, since an addition belongs to one tar.
 - `s` writes every archive with unsaved changes and reports how many were saved. If one
   fails, saving stops there and the archives already written stay saved.
@@ -231,11 +257,11 @@ What the editor does:
    through a pipe. It reads only the tar headers, so a large layer does not go to
    disk. Then it counts the changes on the working disk that are not in an OCI tag,
    with `anka_image diff -ln`.
-2. `Space`, `a`, and `w` work as in archive mode, with one rule for `Space` (below).
+2. `x`, `u`, `a`, and `w` work as in archive mode, with one rule for `x` (below).
 3. `s` asks about the uncommitted disk changes, if there are some. Then it asks for
    the new OCI tag name. The default is `<tag>-edit`. A name that exists is refused
    before the disk changes.
-4. It writes a small change tar: a whiteout for each marked path, deepest paths
+4. It writes a small change tar: a whiteout for each dropped path, deepest paths
    first, then the staged items. It sends the tar to `anka import -v <vm>` and runs
    `anka push -l -t <new tag> <vm>`. Then it loads the new OCI tag, which holds only
    your edits.
@@ -245,7 +271,7 @@ Ctrl-C has no effect while the import and the commit run.
 Rules:
 
 - The VM must be stopped. If you give `--tag`, it must be the VM's current OCI tag.
-- `Space` works only on paths that the layer added: entries with change kind 1, and
+- `x` works only on paths that the layer added: entries with change kind 1, and
   directory entries. Anka's diff writes a directory only when the base image does not
   have it. A changed file (kind 2) or a whiteout has a base version under it. A
   whiteout cannot bring that version back, so the editor shows "This entry has a base
@@ -277,7 +303,7 @@ and the new OCI tag's layer held only those changes.
   in-memory path tree (directories are inferred from entry paths). A path found in
   several archives becomes one node that records which archives hold it.
 - Removal and staged additions are per-archive flags on tree nodes; a node is excluded
-  from an archive on save if it or any of its ancestors is marked for that archive.
+  from an archive on save if it or any of its ancestors is dropped for that archive.
 - Additions reference the host file by path and are read at save time. A new file gets
   its type from the host and its owner from the prompt. Anka imports an entry only
   when its change kind (the tar `devmajor` field) is allowed. Thus an addition that

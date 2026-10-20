@@ -23,7 +23,7 @@ HDR     := $(wildcard src/*.h)
 
 LIB_OBJ := $(filter-out src/main.o src/tui.o,$(OBJ))
 TEST_SUPPORT := tests/test_support.c tests/test_support.h
-TEST_BIN := tests/roundtrip_test tests/vm_mode_test
+TEST_BIN := tests/roundtrip_test tests/vm_mode_test tests/preview_test
 
 .PHONY: all build clean install test test-dev phase-build screenshots dev
 

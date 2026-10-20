@@ -169,6 +169,11 @@ const char *node_whiteout_target(const le_node *n);
 const le_meta *node_display_meta(const le_node *n, int narchives);
 
 int       node_effectively_removed(const le_node *n, int arch_idx);
+/* Nearest ancestor with an explicit drop in that archive, or NULL. */
+const le_node *node_drop_parent(const le_node *n, int arch_idx);
+/* '.' not held, '+' staged, 'X' dropped (this node or a parent),
+ * else '1'+arch_idx when present. */
+char      node_archive_slot_char(const le_node *n, int arch_idx);
 void      model_toggle_removed(le_model *m, le_node *n, int arch_idx);
 /* Mark for removal in every archive holding the path; unmark all instead when
  * any of them is already marked. */
@@ -178,10 +183,14 @@ void      model_toggle_removed_all(le_model *m, le_node *n);
  * freed, so n must not be used afterwards. */
 void      model_unstage(le_model *m, le_node *n, int arch_idx);
 
-/* The Space action: undo a staged addition, otherwise toggle removal. May
- * free n (see model_unstage). */
+/* Cancel a staged item, or clear an explicit drop. Does not clear an
+ * inherited drop. May free n (see model_unstage). */
+le_mark_result model_undo(le_model *m, le_node *n, int arch_idx);
+
+/* Combined unstage-or-toggle used by tests. The TUI uses x and u separately.
+ * May free n (see model_unstage). */
 le_mark_result model_toggle_mark(le_model *m, le_node *n, int arch_idx);
-/* The Space action over every archive holding the path. May free n. */
+/* Combined unstage-or-toggle over every archive holding the path. May free n. */
 le_mark_result model_toggle_mark_all(le_model *m, le_node *n);
 
 int       model_arch_dirty(const le_model *m, int arch_idx);

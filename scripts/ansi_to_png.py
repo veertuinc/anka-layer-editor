@@ -120,9 +120,10 @@ def apply_sgr(style, params):
 def parse_pane(text):
     """Return rows of (character, style-copy) cells. Styles persist across lines.
 
-    Pad a short row with the style at the end of that row. The style at the
-    end of the capture is the reverse footer, and using it for every short
-    row paints the empty area light grey.
+    Pad a short row with the style at the end of that row so a highlight bar
+    fills the width. Empty rows pad with the default background: tmux keeps
+    the previous SGR, and using it would paint the empty area with the last
+    selected color.
     """
     style = Style()
     rows = []
@@ -153,10 +154,15 @@ def parse_pane(text):
     if row:
         rows.append((row, StyleCopy(style)))
     width = max((len(line) for line, _style in rows), default=0)
+    # Pad a short row with the style at the end of that row so a selected
+    # highlight bar fills the width. An empty row has no cells; tmux still
+    # carries the previous SGR, so pad those with the default background.
+    default_style = Style()
     padded = []
     for line, end_style in rows:
+        pad_style = end_style if line else default_style
         while len(line) < width:
-            line.append((" ", StyleCopy(end_style)))
+            line.append((" ", StyleCopy(pad_style)))
         padded.append(line)
     return padded
 

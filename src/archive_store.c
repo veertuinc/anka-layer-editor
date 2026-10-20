@@ -1,5 +1,6 @@
 #include "archive_store.h"
 #include "archive.h"
+#include "member_read.h"
 #include "util.h"
 
 #include <stdlib.h>
@@ -27,6 +28,15 @@ static int archive_store_save(le_store *store, le_model *m, int arch_idx,
     return archive_save(((archive_store *)store)->path, m, arch_idx, err, errlen);
 }
 
+static int archive_store_read_member(const le_store *store,
+                                     const char *guest_path,
+                                     le_member_bytes *out, char *err,
+                                     size_t errlen) {
+    return member_read_from_archive(((const archive_store *)store)->path,
+                                    guest_path, MEMBER_PREVIEW_MAX, out, err,
+                                    errlen);
+}
+
 static void archive_store_free(le_store *store) {
     free(store);
 }
@@ -35,6 +45,7 @@ static const le_store_ops archive_store_ops = {
     .label = archive_store_label,
     .load = archive_store_load,
     .save = archive_store_save,
+    .read_member = archive_store_read_member,
     .free = archive_store_free,
 };
 

@@ -365,6 +365,28 @@ int node_effectively_removed(const le_node *n, int arch_idx) {
     return 0;
 }
 
+const le_node *node_drop_parent(const le_node *n, int arch_idx) {
+    if (!n || arch_idx < 0 || arch_idx >= LE_MAX_ARCHIVES)
+        return NULL;
+    for (const le_node *p = n->parent; p; p = p->parent)
+        if (p->arch[arch_idx].removed)
+            return p;
+    return NULL;
+}
+
+char node_archive_slot_char(const le_node *n, int arch_idx) {
+    if (!n || arch_idx < 0 || arch_idx >= LE_MAX_ARCHIVES)
+        return '.';
+    const le_arch_state *a = &n->arch[arch_idx];
+    if (a->staged)
+        return '+';
+    if (!a->present)
+        return '.';
+    if (node_effectively_removed(n, arch_idx))
+        return 'X';
+    return (char)('1' + arch_idx);
+}
+
 int node_path(const le_node *n, char *buf, size_t len) {
     if (!buf || len == 0)
         return -1;
@@ -663,6 +685,19 @@ void model_unstage(le_model *m, le_node *n, int arch_idx) {
     count_change(&m->arch_added[arch_idx], &m->added, -1);
     touch(m);
     prune_unused(m, n);
+}
+
+le_mark_result model_undo(le_model *m, le_node *n, int arch_idx) {
+    if (!n || n == m->root || !valid_arch(m, arch_idx))
+        return LE_MARK_NONE;
+    if (n->arch[arch_idx].staged) {
+        model_unstage(m, n, arch_idx);
+        return LE_MARK_UNSTAGED;
+    }
+    if (!n->arch[arch_idx].removed)
+        return LE_MARK_NONE;
+    set_removed(m, n, arch_idx, 0);
+    return LE_MARK_UNMARKED;
 }
 
 /* ---- removal ---- */

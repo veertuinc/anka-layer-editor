@@ -447,6 +447,25 @@ static void test_vm_store_load_and_may_remove(const char *dir) {
     model_free(m);
 }
 
+static void test_vm_store_read_member(const char *dir) {
+    fake_anka_reset(dir);
+    le_model *m;
+    le_store *store = open_loaded_vm_store(dir, &m);
+    char err[512] = "";
+    le_member_bytes bytes = {0};
+    EXPECT(store && store_read_member(store, "added.txt", &bytes, err,
+                                      sizeof(err)) == 0 &&
+           bytes.len == 1 && bytes.data && bytes.data[0] == 'a',
+           "vm preview: %s", err);
+    member_bytes_free(&bytes);
+    EXPECT(store && store_read_member(store, "nope", &bytes, err,
+                                      sizeof(err)) == -1 &&
+           strstr(err, "not in the archive"),
+           "missing member: %s", err);
+    store_free(store);
+    model_free(m);
+}
+
 static void test_vm_store_save_questions(const char *dir) {
     fake_anka_reset(dir);
     write_fake_state("tags", "base\ntaken\n");
@@ -565,6 +584,7 @@ int main(void) {
     test_anka_cli_export_streams_layer(dir);
     test_vm_store_refuses_running_vm_and_wrong_tag(dir);
     test_vm_store_load_and_may_remove(dir);
+    test_vm_store_read_member(dir);
     test_vm_store_save_questions(dir);
     test_vm_store_save_imports_commits_and_reloads(dir);
     test_vm_store_save_failures(dir);

@@ -2,6 +2,7 @@
 #include "anka_cli.h"
 #include "archive.h"
 #include "change_set.h"
+#include "member_read.h"
 #include "util.h"
 
 #include <errno.h>
@@ -45,28 +46,66 @@ static const char *vm_store_label(const le_store *base) {
     return ((const vm_store *)base)->label;
 }
 
-/* Load the current tag's layer from the export stream into slot arch_idx. */
-static int load_layer(vm_store *store, le_model *m, int arch_idx, char *err,
-                      size_t errlen) {
+typedef int (*vm_export_use)(tar_t *in, void *ctx, char *err, size_t errlen);
+
+/* Open the current tag's export, call use, then wait for the process. */
+static int vm_with_export(vm_store *store, vm_export_use use, void *ctx,
+                          char *err, size_t errlen) {
     proc_stream stream;
     if (anka_cli_export_start(&store->info, &stream, err, errlen) == -1)
         return -1;
-    int stdout_fd = stream.stdout_fd;
-    tar_t *in = tar_rdopen(stdout_fd);
-    int load_rc = -1;
+    tar_t *in = tar_rdopen(stream.stdout_fd);
+    int use_rc = -1;
     if (in) {
-        load_rc = archive_load_tar(in, store->label, m, arch_idx, err, errlen);
+        use_rc = use(in, ctx, err, errlen);
         tar_close(in);
     } else {
         le_seterr(err, errlen, "%s: cannot read the export", store->label);
-        close(stdout_fd);
+        close(stream.stdout_fd);
     }
     char export_err[512];
     if (anka_cli_export_finish(&stream, export_err, sizeof(export_err)) == -1) {
         le_seterr(err, errlen, "%s", export_err);
         return -1;
     }
-    return load_rc;
+    return use_rc;
+}
+
+typedef struct {
+    le_model   *m;
+    int         arch_idx;
+    const char *label;
+} vm_load_ctx;
+
+static int vm_use_load(tar_t *in, void *ctx, char *err, size_t errlen) {
+    vm_load_ctx *c = ctx;
+    return archive_load_tar(in, c->label, c->m, c->arch_idx, err, errlen);
+}
+
+/* Load the current tag's layer from the export stream into slot arch_idx. */
+static int load_layer(vm_store *store, le_model *m, int arch_idx, char *err,
+                      size_t errlen) {
+    vm_load_ctx ctx = {.m = m, .arch_idx = arch_idx, .label = store->label};
+    return vm_with_export(store, vm_use_load, &ctx, err, errlen);
+}
+
+typedef struct {
+    const char      *guest_path;
+    le_member_bytes *out;
+} vm_read_ctx;
+
+static int vm_use_read(tar_t *in, void *ctx, char *err, size_t errlen) {
+    vm_read_ctx *c = ctx;
+    return member_read_from_tar(in, c->guest_path, MEMBER_PREVIEW_MAX, c->out,
+                                err, errlen);
+}
+
+static int vm_store_read_member(const le_store *base, const char *guest_path,
+                                le_member_bytes *out, char *err,
+                                size_t errlen) {
+    vm_store *store = (vm_store *)base;
+    vm_read_ctx ctx = {.guest_path = guest_path, .out = out};
+    return vm_with_export(store, vm_use_read, &ctx, err, errlen);
 }
 
 static int vm_store_load(le_store *base, le_model *m, int arch_idx, char *err,
@@ -236,6 +275,7 @@ static const le_store_ops vm_store_ops = {
     .pre_save_question = vm_store_pre_save_question,
     .save_name_prompt = vm_store_save_name_prompt,
     .check_save_name = vm_store_check_save_name,
+    .read_member = vm_store_read_member,
     .free = vm_store_free,
 };
 

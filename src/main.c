@@ -13,7 +13,7 @@ static void usage(const char *prog) {
             "       %s --vm <name> [--tag <tag>]\n"
             "\n"
             "Interactive editor for filesystem-layer tar.gz archives.\n"
-            "Browse the hierarchy, mark paths for removal, add host files,\n"
+            "Browse the hierarchy, drop paths from the layer, add host files,\n"
             "and save. With several archives loaded (up to %d), each row shows\n"
             "which archives hold that path. Press '?' inside for keybindings.\n"
             "\n"
